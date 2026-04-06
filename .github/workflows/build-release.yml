@@ -1,0 +1,63 @@
+name: Build & Release APK
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'   # 匹配 x.x.x 格式的 tag
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+
+      - name: Rename APK
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mv app/build/outputs/apk/release/app-release.apk "StarX-v${TAG}.apk"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "StarX v${{ github.ref_name }}"
+          body: |
+            ## StarX v${{ github.ref_name }}
+
+            自动构建发布。
+
+            ### 安装说明
+            1. 下载 APK 文件
+            2. 安装到已 Root 设备
+            3. 在 LSPosed/LSPatch 中启用模块
+            4. 勾选「学习通」作用域
+            5. 重启学习通
+          files: "StarX-v${{ github.ref_name }}.apk"
+          draft: false
+          prerelease: false

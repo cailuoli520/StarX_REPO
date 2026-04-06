@@ -1,0 +1,905 @@
+package org.xiyu.starx.hook;
+
+import android.app.Activity;
+import android.content.Context;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import org.xiyu.starx.util.CxClasses;
+import org.xiyu.starx.util.Logx;
+
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import io.github.libxposed.api.XposedModule;
+
+/**
+ * 视频 Hook — 倍速解锁 + 任务点一键完成 + 浮动控制面板
+ *
+ * 核心发现:
+ * - DotViewModel.b() 仅为分析打点，不影响任务完成状态
+ * - 任务点完成由 CourseViewModel.S() 通过 reportUrl 上报控制
+ * - enc 算法: MD5("[clazzId][puid][jobid][objectId][playSec*1000][d_yHJ!$pdA~5][dur*1000][clipTime]")
+ */
+public class VideoHook {
+    private final XposedModule module;
+    private final ClassLoader cl;
+
+    private static final String COURSE_VM_CLASS =
+            "com.chaoxing.mobile.player.course.viewmodel.CourseViewModel";
+    private static final String COURSE_VIDEO_CLASS =
+            "com.chaoxing.mobile.player.course.model.CourseVideo";
+    private static final String COURSE_FRAGMENT_CLASS =
+            "com.chaoxing.mobile.player.course.CoursePlayerFragment";
+    private static final String ACCOUNT_MGR_CLASS =
+            "com.chaoxing.study.account.AccountManager";
+
+    // ── 反编译映射: 混淆名 → 可读名 ──
+    /** j9.f = HttpClientManager — 全局 OkHttpClient 单例管理器 */
+    private static final String HTTP_CLIENT_MANAGER = "j9.f";
+    /** j9.f#h() = getOkHttpClient() — 返回已配置 CookieJar/UA 的单例 */
+    private static final String GET_OKHTTPCLIENT_METHOD = "h";
+    /** de.s$a = RetrofitClientHolder — Retrofit 工厂 (已废弃，做备选) */
+    private static final String RETROFIT_CLIENT_HOLDER = "de.s$a";
+    /** de.s$a#f112762c = noRedirectClient — 进度上报专用 OkHttpClient */
+    private static final String NO_REDIRECT_CLIENT_FIELD = "f112762c";
+    /** com.chaoxing.mobile.player.course.a = CourseVideoEvent — EventBus 视频完成事件 */
+    private static final String COURSE_VIDEO_EVENT = "com.chaoxing.mobile.player.course.a";
+    /** course.a#d(String) = setVideoJson — 设置 CoursePlayerData JSON */
+    private static final String SET_VIDEO_JSON_METHOD = "d";
+    /** course.a#c(String) = setCourseDotRes — 设置任务点结果 JSON */
+    private static final String SET_COURSE_DOT_RES_METHOD = "c";
+    /** AccountManager#E() = getInstance() — 获取 AccountManager 单例 */
+    private static final String ACCOUNT_GET_INSTANCE = "E";
+    /** AccountManager#F() = getAccount() — 获取当前登录账号 */
+    private static final String ACCOUNT_GET_ACCOUNT = "F";
+
+    private static final String ENC_SALT = "d_yHJ!$pdA~5";
+    private static final String URL_FMT =
+            "?otherInfo=%s&playingTime=%s&duration=%d&akid=null&jobid=%s"
+                    + "&clipTime=%s&clazzId=%s&objectId=%s&userid=%s&isdrag=%d"
+                    + "&enc=%s&rt=%s&dtype=Video&view=json";
+
+    /** 已发送过快速完成的视频标识 (objectId_chapterId)，防止重复 */
+    private final Set<String> completedVideos = Collections.synchronizedSet(new HashSet<>());
+
+    public VideoHook(XposedModule module, ClassLoader cl) {
+        this.module = module;
+        this.cl = cl;
+    }
+
+    public void hook() throws Throwable {
+        hookSpeedList();
+        hookSpeedRestriction();
+        hookProgressReport();
+        hookPlayerUI();
+        Logx.i("VideoHook: initialized");
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  1. 倍速列表扩展 — 追加 3x / 5x / 8x / 16x
+    // ──────────────────────────────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private void hookSpeedList() {
+        Class<?> speedItemClass;
+        Constructor<?> speedItemCtor;
+        try {
+            speedItemClass = Class.forName(CxClasses.SPEED_ITEM, false, cl);
+            speedItemCtor = speedItemClass.getDeclaredConstructor(String.class, float.class);
+            speedItemCtor.setAccessible(true);
+        } catch (Throwable t) {
+            Logx.w("VideoHook: SpeedItem class not found: " + t.getMessage());
+            return;
+        }
+
+        try {
+            Class<?> svpClass = Class.forName(CxClasses.STANDARD_VIDEO_PLAYER, false, cl);
+            Method setSpeedData = svpClass.getDeclaredMethod("setSpeedData", List.class);
+            final Constructor<?> ctor = speedItemCtor;
+            module.hook(setSpeedData).intercept(chain -> {
+                List<Object> list = (List<Object>) chain.getArg(0);
+                List<Object> extended = new ArrayList<>(list);
+                addExtraSpeeds(extended, ctor);
+                return chain.proceed(new Object[]{extended});
+            });
+            Logx.i("VideoHook: hooked StandardVideoPlayer.setSpeedData");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: StandardVideoPlayer hook failed: " + t.getMessage());
+        }
+
+        try {
+            Class<?> csvClass = Class.forName(CxClasses.CX_SPEED_VIEW, false, cl);
+            Method setSpeedList = csvClass.getDeclaredMethod("setSpeedList", List.class);
+            final Constructor<?> ctor = speedItemCtor;
+            module.hook(setSpeedList).intercept(chain -> {
+                List<Object> list = (List<Object>) chain.getArg(0);
+                List<Object> extended = new ArrayList<>(list);
+                addExtraSpeeds(extended, ctor);
+                return chain.proceed(new Object[]{extended});
+            });
+            Logx.i("VideoHook: hooked CXSpeedView.setSpeedList");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: CXSpeedView hook failed: " + t.getMessage());
+        }
+    }
+
+    private void addExtraSpeeds(List<Object> list, Constructor<?> ctor) {
+        float[] extras = {3.0f, 5.0f, 8.0f, 16.0f};
+        for (float speed : extras) {
+            try {
+                list.add(ctor.newInstance(speed + "x", speed));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  2. 解除倍速限制
+    //     CourseVideoPlayer.setCanSpeed(false) → 强制改为 true
+    //     CourseVideoPlayer.h1() 进度回调中会在超过已观看进度时
+    //     强制 1x + 禁倍速按钮，hook setCanSpeed 一劳永逸
+    // ──────────────────────────────────────────────────────────────
+
+    private void hookSpeedRestriction() {
+        // 方案 A: Hook CourseVideoPlayer.setCanSpeed(boolean) — 最稳定
+        try {
+            Class<?> cvpClass = Class.forName(
+                    "com.chaoxing.mobile.player.course.CourseVideoPlayer", false, cl);
+            Method setCanSpeed = cvpClass.getMethod("setCanSpeed", boolean.class);
+            module.hook(setCanSpeed).intercept(chain -> {
+                boolean timeModEnabled = false;
+                try {
+                    var prefs = module.getRemotePreferences("config");
+                    timeModEnabled = prefs.getBoolean("hook_video_time_enabled", false);
+                } catch (Throwable ignored) {}
+                if (timeModEnabled) {
+                    // 无论原值是什么，强制 canSpeed = true
+                    return chain.proceed(new Object[]{true});
+                }
+                return chain.proceed();
+            });
+            Logx.i("VideoHook: hooked CourseVideoPlayer.setCanSpeed → forced true");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: setCanSpeed hook failed: " + t.getMessage());
+        }
+
+        // 方案 B: 同时 hook h1() 里的进度检查 — 防止播放中途被重置为 1x
+        //   h1(int total, int current, int buffered) 中当 current >= lastMaxPlayed
+        //   且 !canSpeed 时会 f0(1.0f, true) 强制 1x。
+        //   直接 hook f0(float, boolean) 在启用时忽略强制 1x 调用。
+        try {
+            Class<?> absViewClass = Class.forName(
+                    "com.chaoxing.videoplayer.base.ABSVideoView", false, cl);
+            // d0(float, boolean) 或 f0(float, boolean) — setSpeed 最终调的
+            Method speedSetter = null;
+            for (Method m : absViewClass.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length == 2 && p[0] == float.class && p[1] == boolean.class
+                        && m.getReturnType() == void.class) {
+                    speedSetter = m;
+                    break;
+                }
+            }
+            if (speedSetter != null) {
+                module.hook(speedSetter).intercept(chain -> {
+                    float newSpeed = (float) chain.getArg(0);
+                    // 如果试图强制重置为 1x 且 timeModEnabled，拦截
+                    if (newSpeed == 1.0f) {
+                        try {
+                            var prefs = module.getRemotePreferences("config");
+                            if (prefs.getBoolean("hook_video_time_enabled", false)) {
+                                // 检查是否来自强制重置 (boolean arg = true 代表 notify)
+                                // 只在播放器当前速度 > 1 时阻止重置
+                                Object player = chain.getThisObject();
+                                Method getSpeed = player.getClass().getMethod("getSpeed");
+                                float curSpeed = (float) getSpeed.invoke(player);
+                                if (curSpeed > 1.0f) {
+                                    Logx.i("VideoHook: blocked speed reset 1x (cur=" + curSpeed + ")");
+                                    return null;
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                    return chain.proceed();
+                });
+                Logx.i("VideoHook: hooked speed setter to prevent forced 1x reset");
+            }
+        } catch (Throwable t) {
+            Logx.w("VideoHook: speed setter hook failed: " + t.getMessage());
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  3. 进度上报 Hook — 在 CourseViewModel.S() 中自动完成
+    //     当 "时长修改" 开启时, 首次 TYPE_PLAYING 触发后台批量上报
+    // ──────────────────────────────────────────────────────────────
+
+    private void hookProgressReport() {
+        try {
+            Class<?> courseVmClass = Class.forName(COURSE_VM_CLASS, false, cl);
+            Class<?> courseVideoClass = Class.forName(COURSE_VIDEO_CLASS, false, cl);
+
+            // 定位 S() 方法: (Context, int, int, int, String, LifecycleOwner, ?) → LiveData
+            Method sMethod = findProgressMethod(courseVmClass);
+            if (sMethod == null) {
+                Logx.w("VideoHook: CourseViewModel.S() not found");
+                return;
+            }
+
+            // 定位 u() 方法: 返回 CourseVideo, 无参数
+            Method getVideoMethod = findGetVideoMethod(courseVmClass, courseVideoClass);
+
+            module.hook(sMethod).intercept(chain -> {
+                boolean timeModEnabled = false;
+                try {
+                    var prefs = module.getRemotePreferences("config");
+                    timeModEnabled = prefs.getBoolean("hook_video_time_enabled", false);
+                } catch (Throwable ignored) {}
+
+                if (!timeModEnabled) return chain.proceed();
+
+                int isdrag = (int) chain.getArg(2);
+
+                // TYPE_PLAYING(0) 或 TYPE_COMPLETE(4) 时执行快速完成
+                if ((isdrag == 0 || isdrag == 4) && getVideoMethod != null) {
+                    try {
+                        Object vm = chain.getThisObject();
+                        Object courseVideo = getVideoMethod.invoke(vm);
+                        if (courseVideo != null) {
+                            String videoKey = getVideoKey(courseVideo, courseVideoClass);
+
+                            // ★ 已完成的视频: 让后续定时器调用正常通过, 不再修改
+                            // 避免每60秒重复发送 TYPE_COMPLETE 导致服务器返回203回滚
+                            if (completedVideos.contains(videoKey)) {
+                                return chain.proceed();
+                            }
+
+                            completedVideos.add(videoKey);
+                            fireBatchComplete(courseVideo, courseVideoClass);
+
+                            // 仅首次: 修改本次调用为 TYPE_COMPLETE + 满时长
+                            // 通过 app 的 S() → LiveData → Ta() → EventBus 更新章节页UI
+                            int durationSec = (int) courseVideoClass
+                                    .getMethod("getDuration").invoke(courseVideo);
+                            resetDedup(vm, courseVmClass);
+                            Logx.i("VideoHook: faking complete (d=" + durationSec + "s)");
+                            return chain.proceed(new Object[]{
+                                    chain.getArg(0),          // context
+                                    durationSec * 1000,       // position (ms)
+                                    4,                        // TYPE_COMPLETE
+                                    chain.getArg(3),          // oldPosition
+                                    chain.getArg(4),          // source string
+                                    chain.getArg(5),          // lifecycleOwner
+                                    chain.getArg(6)           // callback
+                            });
+                        }
+                    } catch (Throwable t) {
+                        Logx.w("VideoHook: progress override failed: " + t.getMessage());
+                    }
+                }
+                return chain.proceed();
+            });
+
+            Logx.i("VideoHook: hooked CourseViewModel progress");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: progress hook failed: " + t.getMessage());
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  4. 浮动控制面板 — 一键完成 + 快速倍速
+    // ──────────────────────────────────────────────────────────────
+
+    private void hookPlayerUI() {
+        try {
+            Class<?> fragmentClass = Class.forName(COURSE_FRAGMENT_CLASS, false, cl);
+            Class<?> courseVmClass = Class.forName(COURSE_VM_CLASS, false, cl);
+            Class<?> courseVideoClass = Class.forName(COURSE_VIDEO_CLASS, false, cl);
+
+            // Hook onActivityCreated — 此时 player 和 viewModel 均已就绪
+            Method onActivityCreated = fragmentClass.getMethod(
+                    "onActivityCreated", Bundle.class);
+
+            // 通过类型定位关键字段
+            Field viewModelField = findFieldByType(fragmentClass, courseVmClass);
+            Field playerField = findPlayerField(fragmentClass);
+
+            if (viewModelField != null) viewModelField.setAccessible(true);
+            if (playerField != null) playerField.setAccessible(true);
+
+            Method getVideoMethod = findGetVideoMethod(courseVmClass, courseVideoClass);
+
+            final Field fVm = viewModelField;
+            final Field fPlayer = playerField;
+            final Method fGetVideo = getVideoMethod;
+
+            module.hook(onActivityCreated).intercept(chain -> {
+                Object result = chain.proceed();
+
+                boolean timeModEnabled = false;
+                try {
+                    var prefs = module.getRemotePreferences("config");
+                    timeModEnabled = prefs.getBoolean("hook_video_time_enabled", false);
+                } catch (Throwable ignored) {}
+
+                if (!timeModEnabled) return result;
+
+                try {
+                    Object fragment = chain.getThisObject();
+                    // 使用 Fragment.getView() 获取根视图
+                    Method getView = fragment.getClass().getMethod("getView");
+                    View rootView = (View) getView.invoke(fragment);
+                    if (rootView != null) {
+                        rootView.post(() -> injectControlPanel(
+                                fragment, rootView, fVm, fPlayer,
+                                courseVmClass, courseVideoClass, fGetVideo));
+                    }
+                } catch (Throwable t) {
+                    Logx.w("VideoHook: UI injection failed: " + t.getMessage());
+                }
+                return result;
+            });
+
+            Logx.i("VideoHook: player UI hook ready");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: player UI hook failed: " + t.getMessage());
+        }
+    }
+
+    // ---------- UI 注入 ----------
+
+    private static final int PANEL_TAG_KEY = 0x7F0CAFE1;
+
+    private void injectControlPanel(Object fragment, View rootView,
+                                    Field vmField, Field playerField,
+                                    Class<?> courseVmClass, Class<?> courseVideoClass,
+                                    Method getVideoMethod) {
+        try {
+            Context ctx = rootView.getContext();
+
+            // 外层面板 ─ 半透明圆角背景
+            LinearLayout panel = new LinearLayout(ctx);
+            panel.setOrientation(LinearLayout.HORIZONTAL);
+            panel.setGravity(Gravity.CENTER_VERTICAL);
+            GradientDrawable panelBg = new GradientDrawable();
+            panelBg.setColor(Color.argb(160, 0, 0, 0));
+            panelBg.setCornerRadius(dp(ctx, 20));
+            panel.setBackground(panelBg);
+            int hPad = dp(ctx, 10);
+            int vPad = dp(ctx, 5);
+            panel.setPadding(hPad, vPad, hPad, vPad);
+
+            // 「一键完成」按钮
+            TextView completeBtn = makeButton(ctx, "完成", Color.argb(200, 76, 175, 80));
+            completeBtn.setOnClickListener(v ->
+                    onCompleteClick(fragment, vmField, courseVmClass,
+                            courseVideoClass, getVideoMethod, ctx));
+            panel.addView(completeBtn);
+
+            // 倍速快捷按钮
+            float[] speeds = {2f, 4f, 8f, 16f};
+            for (float speed : speeds) {
+                TextView btn = makeButton(ctx, (int) speed + "x",
+                        Color.argb(200, 63, 81, 181));
+                btn.setOnClickListener(v ->
+                        onSpeedClick(fragment, playerField, speed, ctx));
+                panel.addView(btn);
+            }
+
+            // 添加到 Activity 的 DecorView (最顶层)，避免被视频 SurfaceView 拦截触摸
+            try {
+                Activity activity = (Activity) rootView.getContext();
+                ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+
+                // 防止重复注入 (tag on decorView)
+                if (decorView.getTag(PANEL_TAG_KEY) != null) {
+                    Logx.i("VideoHook: panel already injected on decor");
+                    return;
+                }
+
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT);
+                lp.gravity = Gravity.TOP | Gravity.START;
+                lp.topMargin = dp(ctx, 8);
+                lp.leftMargin = dp(ctx, 48);
+                panel.setClickable(true);
+                panel.setFocusable(true);
+                decorView.addView(panel, lp);
+                decorView.setTag(PANEL_TAG_KEY, panel);
+                Logx.i("VideoHook: control panel injected on DecorView");
+            } catch (Throwable t2) {
+                // 回退: 添加到 Fragment 根视图
+                if (rootView instanceof ViewGroup) {
+                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.WRAP_CONTENT,
+                            FrameLayout.LayoutParams.WRAP_CONTENT);
+                    lp.gravity = Gravity.TOP | Gravity.START;
+                    lp.topMargin = dp(ctx, 8);
+                    lp.leftMargin = dp(ctx, 48);
+                    ((ViewGroup) rootView).addView(panel, lp);
+                    rootView.setTag(PANEL_TAG_KEY, panel);
+                    Logx.i("VideoHook: control panel injected (fallback)");
+                }
+            }
+        } catch (Throwable t) {
+            Logx.w("VideoHook: panel creation failed: " + t.getMessage());
+        }
+    }
+
+    private static TextView makeButton(Context ctx, String text, int bgColor) {
+        TextView tv = new TextView(ctx);
+        tv.setText(text);
+        tv.setTextColor(Color.WHITE);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        tv.setTypeface(null, Typeface.BOLD);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(bgColor);
+        bg.setCornerRadius(dp(ctx, 12));
+        tv.setBackground(bg);
+        tv.setPadding(dp(ctx, 10), dp(ctx, 4), dp(ctx, 10), dp(ctx, 4));
+        tv.setGravity(Gravity.CENTER);
+        tv.setClickable(true);
+        tv.setFocusable(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(dp(ctx, 3), 0, dp(ctx, 3), 0);
+        tv.setLayoutParams(lp);
+        return tv;
+    }
+
+    // ---------- 一键完成 ----------
+
+    private void onCompleteClick(Object fragment, Field vmField,
+                                 Class<?> courseVmClass, Class<?> courseVideoClass,
+                                 Method getVideoMethod, Context ctx) {
+        try {
+            if (vmField == null || getVideoMethod == null) {
+                Toast.makeText(ctx, "视频数据不可用", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Object vm = vmField.get(fragment);
+            if (vm == null) return;
+            Object courseVideo = getVideoMethod.invoke(vm);
+            if (courseVideo == null) {
+                Toast.makeText(ctx, "当前无视频任务", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            String videoKey = getVideoKey(courseVideo, courseVideoClass);
+            if (completedVideos.contains(videoKey)) {
+                Toast.makeText(ctx, "已提交过完成请求", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            completedVideos.add(videoKey);
+
+            // 获取 fragment 上的 videoJson 字符串 (CoursePlayerData, 用于 EventBus)
+            String videoJson = null;
+            try {
+                Class<?> clz = fragment.getClass();
+                while (clz != null && clz != Object.class && videoJson == null) {
+                    for (Field f : clz.getDeclaredFields()) {
+                        if (f.getType() == String.class) {
+                            f.setAccessible(true);
+                            String val = (String) f.get(fragment);
+                            if (val != null && val.contains("reportUrl") && val.contains("objectId")) {
+                                videoJson = val;
+                                Logx.i("VideoHook: found videoJson in " + clz.getSimpleName()
+                                        + "." + f.getName() + " (len=" + val.length() + ")");
+                                break;
+                            }
+                        }
+                    }
+                    clz = clz.getSuperclass();
+                }
+            } catch (Throwable ex) {
+                Logx.w("VideoHook: videoJson scan error: " + ex.getMessage());
+            }
+            if (videoJson == null) {
+                Logx.w("VideoHook: videoJson not found on fragment, EventBus event will be partial");
+            }
+
+            final String fVideoJson = videoJson;
+
+            Toast.makeText(ctx, "正在提交...", Toast.LENGTH_SHORT).show();
+            fireBatchComplete(courseVideo, courseVideoClass, () -> {
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    Toast.makeText(ctx, "✓ 视频任务已完成", Toast.LENGTH_SHORT).show();
+                    // ★ 通过 EventBus 通知章节页面更新任务点状态
+                    postCompletionEvent(fVideoJson);
+                });
+            });
+        } catch (Throwable t) {
+            Logx.w("VideoHook: complete click failed: " + t.getMessage());
+            Toast.makeText(ctx, "操作失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // ---------- 快速倍速 ----------
+
+    private void onSpeedClick(Object fragment, Field playerField,
+                              float speed, Context ctx) {
+        try {
+            if (playerField == null) return;
+            Object player = playerField.get(fragment);
+            if (player == null) return;
+            // ABSVideoView.setSpeed(float)
+            Method setSpeed = player.getClass().getMethod("setSpeed", float.class);
+            setSpeed.invoke(player, speed);
+            Toast.makeText(ctx, speed + "x", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            Logx.w("VideoHook: setSpeed failed: " + t.getMessage());
+        }
+    }
+
+    // ---------- EventBus 完成通知 ----------
+
+    /**
+     * 通过 EventBus 发送 CourseVideoEvent，通知章节页面将任务点从黄色→绿色。
+     *
+     * 事件类: CourseVideoEvent (com.chaoxing.mobile.player.course.a)
+     *   videoJson     字段 f68878a (via setVideoJson/d()) = CoursePlayerData JSON
+     *   courseDotRes  字段 f68879b (via setCourseDotRes/c()) = CourseDotRes JSON
+     *
+     * ChapterCardFragment 订阅此事件后调用:
+     *   javascript:proxy_completed(videoJson, courseDotResJson)
+     */
+    private void postCompletionEvent(String videoJson) {
+        try {
+            // 获取 EventBus
+            Class<?> eventBusClass = Class.forName("org.greenrobot.eventbus.EventBus", false, cl);
+            Object eventBus = eventBusClass.getMethod("getDefault").invoke(null);
+
+            // 创建 CourseVideoEvent 事件对象
+            Class<?> eventClass = Class.forName(COURSE_VIDEO_EVENT, false, cl);
+            Object event = eventClass.getDeclaredConstructor().newInstance();
+
+            // setVideoJson(d(String)) — 设置 CoursePlayerData JSON
+            if (videoJson != null) {
+                try {
+                    Method setVideoJson = eventClass.getDeclaredMethod(
+                            SET_VIDEO_JSON_METHOD, String.class);
+                    setVideoJson.invoke(event, videoJson);
+                } catch (NoSuchMethodException e) {
+                    // 回退: 直接写 videoJson 字段 (f68878a)
+                    Field f = eventClass.getDeclaredFields()[0];
+                    f.setAccessible(true);
+                    f.set(event, videoJson);
+                }
+            }
+
+            // setCourseDotRes(c(String)) — 设置任务点结果 JSON (result=1)
+            String dotResJson = "{\"result\":1,\"isPassed\":true}";
+            try {
+                Method setCourseDotRes = eventClass.getDeclaredMethod(
+                        SET_COURSE_DOT_RES_METHOD, String.class);
+                setCourseDotRes.invoke(event, dotResJson);
+            } catch (NoSuchMethodException e) {
+                // 回退: 直接写 courseDotRes 字段 (f68879b)
+                if (eventClass.getDeclaredFields().length > 1) {
+                    Field f = eventClass.getDeclaredFields()[1];
+                    f.setAccessible(true);
+                    f.set(event, dotResJson);
+                }
+            }
+
+            // 发送事件
+            eventBusClass.getMethod("post", Object.class).invoke(eventBus, event);
+            Logx.i("VideoHook: posted CourseVideoEvent via EventBus");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: EventBus post failed: " + t.getMessage());
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  批量进度上报 — 模拟完整观看过程
+    // ──────────────────────────────────────────────────────────────
+
+    private void fireBatchComplete(Object courseVideo, Class<?> cvClass) {
+        fireBatchComplete(courseVideo, cvClass, null);
+    }
+
+    private void fireBatchComplete(Object courseVideo, Class<?> cvClass,
+                                   Runnable onSuccess) {
+        new Thread(() -> {
+            try {
+                String reportUrl = str(cvClass, courseVideo, "getReportUrl");
+                if (reportUrl == null || reportUrl.isEmpty()) {
+                    Logx.w("VideoHook: reportUrl is empty, skip batch");
+                    return;
+                }
+                String otherInfo = str(cvClass, courseVideo, "getOtherInfo");
+                String jobid = str(cvClass, courseVideo, "getJobid");
+                String clazzId = str(cvClass, courseVideo, "getClazzId");
+                String objectId = str(cvClass, courseVideo, "getObjectid");
+                int durationSec = (int) cvClass.getMethod("getDuration").invoke(courseVideo);
+                double rt = (double) cvClass.getMethod("getRt").invoke(courseVideo);
+                int vbegin = (int) cvClass.getMethod("getVbegin").invoke(courseVideo);
+                int vend = (int) cvClass.getMethod("getVend").invoke(courseVideo);
+                String clipTime = (vbegin < 0 || vend <= 0)
+                        ? ("0_" + durationSec) : (vbegin + "_" + vend);
+
+                String puid = getPuid();
+
+                // ★ DEBUG: 输出所有关键参数
+                Logx.i("VideoHook[DBG] reportUrl=" + reportUrl);
+                Logx.i("VideoHook[DBG] jobid=" + jobid + " clazzId=" + clazzId
+                        + " objectId=" + objectId + " puid=" + puid);
+                Logx.i("VideoHook[DBG] duration=" + durationSec + " rt=" + rt
+                        + " clipTime=" + clipTime + " otherInfo=" + otherInfo);
+
+                // 模拟: START → 4 个 PLAYING → COMPLETE
+                int step = Math.max(durationSec / 5, 1);
+                // TYPE_START
+                sendReport(reportUrl, otherInfo, "0", durationSec, jobid,
+                        clipTime, clazzId, objectId, puid, 3, rt, 0);
+                Thread.sleep(800);
+
+                // TYPE_PLAYING 模拟进度
+                for (int sec = step; sec < durationSec; sec += step) {
+                    sendReport(reportUrl, otherInfo, String.valueOf(sec), durationSec,
+                            jobid, clipTime, clazzId, objectId, puid, 0, rt, sec);
+                    Thread.sleep(800);
+                }
+
+                // TYPE_COMPLETE
+                sendReport(reportUrl, otherInfo, String.valueOf(durationSec), durationSec,
+                        jobid, clipTime, clazzId, objectId, puid, 4, rt, durationSec);
+
+                Logx.i("VideoHook: batch complete sent (d=" + durationSec + "s)");
+                if (onSuccess != null) onSuccess.run();
+            } catch (Throwable t) {
+                Logx.w("VideoHook: batch complete failed: " + t.getMessage());
+            }
+        }, "StarX-BatchComplete").start();
+    }
+
+    /**
+     * 获取应用全局 OkHttpClient
+     * 首选: HttpClientManager.getOkHttpClient() — 已配置 CookieJar / User-Agent 拦截器
+     * 备选: RetrofitClientHolder.noRedirectClient — 进度上报专用客户端
+     */
+    private Object getAppOkHttpClient() {
+        // 首选: HttpClientManager(j9.f).getOkHttpClient(h)
+        try {
+            Class<?> cls = Class.forName(HTTP_CLIENT_MANAGER, false, cl);
+            return cls.getDeclaredMethod(GET_OKHTTPCLIENT_METHOD).invoke(null);
+        } catch (Throwable t) {
+            Logx.w("VideoHook: HttpClientManager.getOkHttpClient() failed: " + t.getMessage());
+        }
+        // 备选: RetrofitClientHolder(de.s$a).noRedirectClient(f112762c)
+        try {
+            Class<?> cls = Class.forName(RETROFIT_CLIENT_HOLDER, false, cl);
+            Field f = cls.getDeclaredField(NO_REDIRECT_CLIENT_FIELD);
+            f.setAccessible(true);
+            return f.get(null);
+        } catch (Throwable t) {
+            Logx.w("VideoHook: RetrofitClientHolder.noRedirectClient failed: " + t.getMessage());
+        }
+        return null;
+    }
+
+    private void sendReport(String reportUrl, String otherInfo, String playingTime,
+                            int durationSec, String jobid, String clipTime,
+                            String clazzId, String objectId, String puid,
+                            int isdrag, double rt, int playingSeconds) {
+        try {
+            String enc = calcEnc(clazzId, puid, jobid, objectId,
+                    playingSeconds, durationSec, clipTime);
+            Logx.i("VideoHook[DBG] enc input: [" + s(clazzId) + "][" + s(puid) + "]["
+                    + (jobid != null ? jobid : "") + "][" + s(objectId) + "]["
+                    + ((long) playingSeconds * 1000) + "][" + ENC_SALT + "]["
+                    + ((long) durationSec * 1000) + "][" + s(clipTime) + "]");
+            Logx.i("VideoHook[DBG] enc=" + enc);
+            String query = String.format(URL_FMT,
+                    otherInfo != null ? otherInfo : "",
+                    playingTime,
+                    durationSec,
+                    jobid != null ? jobid : "",
+                    clipTime,
+                    clazzId != null ? clazzId : "",
+                    objectId != null ? objectId : "",
+                    puid != null ? puid : "",
+                    isdrag,
+                    enc,
+                    String.valueOf(rt));
+            String fullUrl = reportUrl + query;
+
+            // 使用应用自身的 OkHttpClient (已配置 CookieJar + 拦截器)
+            Object client = getAppOkHttpClient();
+            if (client != null) {
+                int code = executeOkHttpGet(client, fullUrl);
+                Logx.i("VideoHook: report sent (isdrag=" + isdrag
+                        + ",pt=" + playingTime + ") → " + code);
+            } else {
+                Logx.w("VideoHook: no OkHttpClient available, skip report");
+            }
+        } catch (Throwable t) {
+            Logx.w("VideoHook: sendReport failed: " + t.getMessage());
+        }
+    }
+
+    /** 通过反射调用 OkHttpClient.newCall(Request).execute() */
+    private int executeOkHttpGet(Object client, String url) throws Exception {
+        // okhttp3.Request.Builder().url(url).build()
+        Class<?> reqBuilderClass = Class.forName("okhttp3.Request$Builder", false, cl);
+        Object builder = reqBuilderClass.getDeclaredConstructor().newInstance();
+        builder = reqBuilderClass.getMethod("url", String.class).invoke(builder, url);
+        Object request = reqBuilderClass.getMethod("build").invoke(builder);
+
+        // client.newCall(request).execute()
+        Class<?> reqClass = Class.forName("okhttp3.Request", false, cl);
+        Object call = client.getClass().getMethod("newCall", reqClass).invoke(client, request);
+        Object response = call.getClass().getMethod("execute").invoke(call);
+
+        int code = (int) response.getClass().getMethod("code").invoke(response);
+
+        // 读取 + 关闭 response body
+        try {
+            Object body = response.getClass().getMethod("body").invoke(response);
+            if (body != null) {
+                String bodyStr = (String) body.getClass().getMethod("string").invoke(body);
+                if (bodyStr != null && bodyStr.length() > 0) {
+                    String truncated = bodyStr.length() > 200
+                            ? bodyStr.substring(0, 200) : bodyStr;
+                    Logx.i("VideoHook: response body: " + truncated);
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        return code;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  工具方法
+    // ──────────────────────────────────────────────────────────────
+
+    /** 定位 CourseViewModel 的进度上报方法 (Context, int, int, int, String, LifecycleOwner, ?) */
+    private Method findProgressMethod(Class<?> courseVmClass) {
+        for (Method m : courseVmClass.getDeclaredMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (p.length == 7
+                    && p[0] == Context.class
+                    && p[1] == int.class && p[2] == int.class && p[3] == int.class
+                    && p[4] == String.class) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /** 定位 CourseViewModel.u(): 返回 CourseVideo, 无参数 */
+    private Method findGetVideoMethod(Class<?> vmClass, Class<?> videoClass) {
+        for (Method m : vmClass.getDeclaredMethods()) {
+            if (m.getReturnType() == videoClass && m.getParameterTypes().length == 0) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /** 通过类型定位字段 */
+    private Field findFieldByType(Class<?> ownerClass, Class<?> fieldType) {
+        for (Field f : ownerClass.getDeclaredFields()) {
+            if (f.getType() == fieldType) return f;
+        }
+        return null;
+    }
+
+    /** 定位 CourseVideoPlayer 字段 (名称含 "VideoPlayer") */
+    private Field findPlayerField(Class<?> fragmentClass) {
+        for (Field f : fragmentClass.getDeclaredFields()) {
+            if (f.getType().getName().contains("VideoPlayer")) return f;
+        }
+        return null;
+    }
+
+    /** 重置 S() 的去重字段，确保调用不被丢弃 */
+    private void resetDedup(Object vm, Class<?> vmClass) {
+        try {
+            List<Field> intFields = new ArrayList<>();
+            for (Field f : vmClass.getDeclaredFields()) {
+                if (f.getType() == int.class && !Modifier.isStatic(f.getModifiers())) {
+                    intFields.add(f);
+                }
+            }
+            // 去重字段是最后两个非静态 int 字段
+            if (intFields.size() >= 2) {
+                Field fSec = intFields.get(intFields.size() - 2);
+                Field fType = intFields.get(intFields.size() - 1);
+                fSec.setAccessible(true);
+                fType.setAccessible(true);
+                fSec.set(vm, -1);
+                fType.set(vm, -1);
+            }
+        } catch (Throwable t) {
+            Logx.w("VideoHook: resetDedup failed: " + t.getMessage());
+        }
+    }
+
+    /** 获取视频唯一标识 */
+    private String getVideoKey(Object courseVideo, Class<?> cvClass) {
+        try {
+            String oid = str(cvClass, courseVideo, "getObjectid");
+            String kid = str(cvClass, courseVideo, "getKnowledgeId");
+            return oid + "_" + kid;
+        } catch (Throwable t) {
+            return String.valueOf(System.identityHashCode(courseVideo));
+        }
+    }
+
+    /** 获取用户 puid: AccountManager.getInstance().getAccount().getPuid() */
+    private String getPuid() {
+        try {
+            Class<?> amClass = Class.forName(ACCOUNT_MGR_CLASS, false, cl);
+            // AccountManager.getInstance() — 混淆名 E()
+            Object mgr = amClass.getMethod(ACCOUNT_GET_INSTANCE).invoke(null);
+            // AccountManager.getAccount() — 混淆名 F()
+            Object account = mgr.getClass().getMethod(ACCOUNT_GET_ACCOUNT).invoke(mgr);
+            String puid = (String) account.getClass().getMethod("getPuid").invoke(account);
+            return puid != null ? puid : "";
+        } catch (Throwable t) {
+            Logx.w("VideoHook: getPuid failed: " + t.getMessage());
+            return "";
+        }
+    }
+
+    /** 反射读取 String getter */
+    private static String str(Class<?> clz, Object obj, String method) throws Exception {
+        return (String) clz.getMethod(method).invoke(obj);
+    }
+
+    // ---------- enc 计算 ----------
+
+    static String calcEnc(String clazzId, String puid, String jobid,
+                          String objectId, int playingSeconds, int durationSec,
+                          String clipTime) {
+        String raw = "[" + s(clazzId) + "][" + s(puid) + "]["
+                + (jobid != null ? jobid : "") + "][" + s(objectId) + "]["
+                + ((long) playingSeconds * 1000) + "][" + ENC_SALT + "]["
+                + ((long) durationSec * 1000) + "][" + s(clipTime) + "]";
+        return md5(raw);
+    }
+
+    private static String s(String v) { return v != null ? v : ""; }
+
+    static String md5(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(input.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) sb.append(String.format("%02x", b & 0xff));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static int dp(Context ctx, float dp) {
+        return (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, dp,
+                ctx.getResources().getDisplayMetrics());
+    }
+}
