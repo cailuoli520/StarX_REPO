@@ -3,6 +3,7 @@ package org.xiyu.starx
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
+import android.net.Uri
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
@@ -28,9 +29,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val PREFS_CONFIG = "config"
         private const val PREFS_SIGN = "sign_config"
         private const val RC_MAP_PICKER = 2001
+        private const val TG_GROUP_URL = "https://t.me/+BUfEUGzViTg2YWU1"
 
-        private const val VERSION_CODE = 3
-        private const val VERSION_NAME = "1.1.1"
+        private const val VERSION_CODE = 4
+        private const val VERSION_NAME = "1.1.3"
 
         // 功能开关 key
         private const val KEY_DETECTION = "hook_detection_enabled"
@@ -186,6 +188,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             Toast.makeText(this, "正在请求作用域...", Toast.LENGTH_SHORT).show()
         }
 
+        binding.btnJoinTg.setOnClickListener {
+            openTelegramGroup()
+        }
+
         binding.btnActivate.setOnClickListener {
             val code = binding.editActivationCode.text.toString().trim()
             if (code.isEmpty()) {
@@ -317,6 +323,14 @@ class MainActivity : Activity(), App.ServiceStateListener {
             Toast.makeText(this, "AI 配置已保存，重启学习通生效", Toast.LENGTH_SHORT).show()
         } catch (e: Throwable) {
             Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openTelegramGroup() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TG_GROUP_URL)))
+        } catch (_: Throwable) {
+            Toast.makeText(this, "无法打开 TG 链接", Toast.LENGTH_SHORT).show()
         }
     }
 
