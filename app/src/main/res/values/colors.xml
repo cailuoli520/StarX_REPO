@@ -22,4 +22,6 @@
 
     <color name="ios_green_bg">#2034C759</color>
     <color name="ios_red_bg">#20FF3B30</color>
+
+    <color name="ic_launcher_background">#263278</color>
 </resources>

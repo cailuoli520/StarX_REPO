@@ -2,6 +2,7 @@ package org.xiyu.starx.hook;
 
 import android.app.Activity;
 
+import org.xiyu.starx.util.ClassFinder;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
 
@@ -24,10 +25,12 @@ import io.github.libxposed.api.XposedModule;
 public class AntiCheatHook {
     private final XposedModule module;
     private final ClassLoader cl;
+    private final ClassFinder finder;
 
     public AntiCheatHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
+        this.finder = new ClassFinder(cl);
     }
 
     public void hook() throws Throwable {
@@ -36,6 +39,9 @@ public class AntiCheatHook {
         hookFaceCollectBySignature();
         hookBehaviorReporterDirect();
         hookOkHttpBehaviorFilter();
+        hookScreenMonitor();
+        hookExamEveriskProtocol();
+        hookActivityProcessImportance();
         Logx.i("AntiCheatHook: initialized");
     }
 
@@ -220,6 +226,101 @@ public class AntiCheatHook {
             Logx.w("AntiCheatHook: OkHttp classes not found, skip network filter");
         } catch (Throwable t) {
             Logx.w("AntiCheatHook: OkHttp interceptor hook failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 【新增】Hook ScreenMonitorUploadDispatcher — 阻止屏幕监控上传
+     *
+     * 超星考试会通过 ScreenMonitorUploadDispatcher 采集屏幕状态并上传服务端,
+     * 记录切屏/分屏行为。拦截所有上传相关方法。
+     */
+    private void hookScreenMonitor() {
+        String[] candidates = {
+                "com.chaoxing.mobile.exam.ScreenMonitorUploadDispatcher",
+                "com.chaoxing.mobile.exam.collect.ScreenMonitorUploadDispatcher"
+        };
+        Class<?> cls = finder.resolve(CxClasses.SCREEN_MONITOR_DISPATCHER, candidates);
+        if (cls == null) {
+            Logx.w("AntiCheatHook: ScreenMonitorUploadDispatcher not found, skip");
+            return;
+        }
+        int hooked = 0;
+        for (Method m : cls.getDeclaredMethods()) {
+            // 拦截所有非静态 void 方法 (upload/dispatch/schedule 等)
+            if (m.getReturnType() == void.class && !Modifier.isStatic(m.getModifiers())) {
+                module.hook(m).intercept(chain -> {
+                    Logx.i("AntiCheatHook: blocked ScreenMonitor." + chain.getExecutable().getName());
+                    return null;
+                });
+                hooked++;
+            }
+        }
+        Logx.i("AntiCheatHook: hooked ScreenMonitorUploadDispatcher (" + hooked + " methods)");
+    }
+
+    /**
+     * 【新增】Hook ExamEveriskProtocol — 拦截考试风控协议
+     *
+     * CLIENT_EVERISK_INFO_CHECK 协议通过 ExamEveriskProtocol 调用 EverISK SDK,
+     * 检测到异常后弹窗并强制退出。拦截其关键方法。
+     */
+    private void hookExamEveriskProtocol() {
+        String[] candidates = {
+                "com.chaoxing.mobile.webapp.jsprotocal.exam.ExamEveriskProtocol",
+                "com.chaoxing.mobile.webapp.jsprotocol.exam.ExamEveriskProtocol"
+        };
+        Class<?> cls = finder.resolve(CxClasses.EXAM_EVERISK_PROTOCOL, candidates);
+        if (cls == null) {
+            Logx.w("AntiCheatHook: ExamEveriskProtocol not found, skip");
+            return;
+        }
+        int hooked = 0;
+        for (Method m : cls.getDeclaredMethods()) {
+            Class<?>[] params = m.getParameterTypes();
+            // 拦截返回 void 的方法 (handle/execute/check 类型)
+            if (m.getReturnType() == void.class && !Modifier.isStatic(m.getModifiers())) {
+                module.hook(m).intercept(chain -> {
+                    Logx.i("AntiCheatHook: blocked ExamEverisk." + chain.getExecutable().getName());
+                    return null;
+                });
+                hooked++;
+            }
+        }
+        Logx.i("AntiCheatHook: hooked ExamEveriskProtocol (" + hooked + " methods)");
+    }
+
+    /**
+     * 【新增】Hook ActivityManager.getRunningAppProcesses — 进程前台伪装
+     *
+     * 部分检测代码通过 getRunningAppProcesses().get(0).importance 判断应用是否在前台，
+     * 切屏后 importance 从 IMPORTANCE_FOREGROUND(100) 变为更高值。
+     * Hook 返回值中的 importance 字段, 始终设为 FOREGROUND。
+     */
+    private void hookActivityProcessImportance() {
+        try {
+            Method getProcesses = android.app.ActivityManager.class.getDeclaredMethod(
+                    "getRunningAppProcesses");
+            module.hook(getProcesses).intercept(chain -> {
+                List<?> result = (List<?>) chain.proceed();
+                if (result != null && !result.isEmpty()) {
+                    for (Object info : result) {
+                        if (info instanceof android.app.ActivityManager.RunningAppProcessInfo) {
+                            android.app.ActivityManager.RunningAppProcessInfo rapi =
+                                    (android.app.ActivityManager.RunningAppProcessInfo) info;
+                            if (rapi.processName != null
+                                    && rapi.processName.contains("chaoxing")) {
+                                rapi.importance =
+                                        android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
+                            }
+                        }
+                    }
+                }
+                return result;
+            });
+            Logx.i("AntiCheatHook: hooked getRunningAppProcesses → IMPORTANCE_FOREGROUND");
+        } catch (Throwable t) {
+            Logx.w("AntiCheatHook: process importance hook failed: " + t.getMessage());
         }
     }
 }

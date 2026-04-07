@@ -23,6 +23,9 @@ import io.github.libxposed.api.XposedModule;
  * 1. 视频内嵌测验 — hook VideoTestView.setTestData, 利用 isRight 自动选答案
  * 2. WebView 考试/作业 — 注入 JS 提取题目, 查题库/AI, 自动填写
  * 3. 被动答案记录 — 从网络响应/对象字段中提取 rightAnswer 到日志
+ *
+ * 反切屏检测:
+ * 4. JS 层面拦截 visibilitychange / blur 事件, 伪装 document.hidden=false
  */
 public class ExamHook {
     private final XposedModule module;
@@ -30,6 +33,33 @@ public class ExamHook {
     private final AnswerProvider answerProvider;
     private final String jsInject;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /**
+     * JS 反切屏检测脚本 — 在考试页面加载时注入
+     *
+     * 覆盖三个层面:
+     * 1. document.hidden / document.visibilityState → 始终 false / "visible"
+     * 2. visibilitychange 事件监听 → 吞掉注册
+     * 3. window blur / pagehide / focusout 事件 → 吞掉注册
+     *
+     * 注意: 必须在页面 JS 执行前注入, 否则已注册的 listener 无法拦截
+     */
+    private static final String VISIBILITY_BYPASS_JS =
+            "(function(){" +
+            "try{" +
+            "Object.defineProperty(document,'hidden',{get:function(){return false},configurable:true});" +
+            "Object.defineProperty(document,'visibilityState',{get:function(){return 'visible'},configurable:true});" +
+            "Object.defineProperty(document,'webkitHidden',{get:function(){return false},configurable:true});" +
+            "Object.defineProperty(document,'webkitVisibilityState',{get:function(){return 'visible'},configurable:true});" +
+            "var _ael=EventTarget.prototype.addEventListener;" +
+            "EventTarget.prototype.addEventListener=function(t,l,o){" +
+            "if(t==='visibilitychange'||t==='webkitvisibilitychange')return;" +
+            "if(this===window&&(t==='blur'||t==='pagehide'||t==='focusout'))return;" +
+            "return _ael.call(this,t,l,o);};" +
+            "var _onv=Object.getOwnPropertyDescriptor(Document.prototype,'onvisibilitychange');" +
+            "Object.defineProperty(document,'onvisibilitychange',{get:function(){return null},set:function(){},configurable:true});" +
+            "}catch(e){}" +
+            "})()";
 
     public ExamHook(XposedModule module, ClassLoader cl, AnswerProvider answerProvider, String jsInject) {
         this.module = module;
@@ -176,6 +206,13 @@ public class ExamHook {
 
     private void injectStarXScript(WebView webView) {
         if (webView == null) return;
+        try {
+            // 首先注入反切屏检测 JS — 必须在考试 JS 之前
+            webView.evaluateJavascript(VISIBILITY_BYPASS_JS, null);
+            Logx.i("ExamHook: visibility bypass JS injected");
+        } catch (Throwable t) {
+            Logx.w("ExamHook: visibility bypass inject failed: " + t.getMessage());
+        }
         if (jsInject == null || jsInject.isEmpty()) {
             Logx.w("ExamHook: no JS inject script (license?)");
             return;

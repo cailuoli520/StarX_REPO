@@ -17,6 +17,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.xiyu.starx.util.ClassFinder;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
 
@@ -54,25 +55,26 @@ public class VideoHook {
     private static final String ACCOUNT_MGR_CLASS =
             "com.chaoxing.study.account.AccountManager";
 
-    // ── 反编译映射: 混淆名 → 可读名 ──
-    /** j9.f = HttpClientManager — 全局 OkHttpClient 单例管理器 */
-    private static final String HTTP_CLIENT_MANAGER = "j9.f";
-    /** j9.f#h() = getOkHttpClient() — 返回已配置 CookieJar/UA 的单例 */
-    private static final String GET_OKHTTPCLIENT_METHOD = "h";
-    /** de.s$a = RetrofitClientHolder — Retrofit 工厂 (已废弃，做备选) */
-    private static final String RETROFIT_CLIENT_HOLDER = "de.s$a";
-    /** de.s$a#f112762c = noRedirectClient — 进度上报专用 OkHttpClient */
-    private static final String NO_REDIRECT_CLIENT_FIELD = "f112762c";
-    /** com.chaoxing.mobile.player.course.a = CourseVideoEvent — EventBus 视频完成事件 */
-    private static final String COURSE_VIDEO_EVENT = "com.chaoxing.mobile.player.course.a";
-    /** course.a#d(String) = setVideoJson — 设置 CoursePlayerData JSON */
-    private static final String SET_VIDEO_JSON_METHOD = "d";
-    /** course.a#c(String) = setCourseDotRes — 设置任务点结果 JSON */
-    private static final String SET_COURSE_DOT_RES_METHOD = "c";
-    /** AccountManager#E() = getInstance() — 获取 AccountManager 单例 */
-    private static final String ACCOUNT_GET_INSTANCE = "E";
-    /** AccountManager#F() = getAccount() — 获取当前登录账号 */
-    private static final String ACCOUNT_GET_ACCOUNT = "F";
+    // ── 混淆类候选名 (全版本通杀) ──
+    private static final String[] HTTP_CLIENT_CANDIDATES = {"j9.f", "k9.f", "i9.f", "j9.g"};
+    private static final String[] RETROFIT_HOLDER_CANDIDATES = {"de.s$a", "de.t$a", "de.r$a"};
+    private static final String[] COURSE_EVENT_CANDIDATES = {
+            "com.chaoxing.mobile.player.course.a", "com.chaoxing.mobile.player.course.b"
+    };
+    private static final String[] ACCOUNT_INSTANCE_CANDIDATES = {"E", "F", "D", "G"};
+    private static final String[] ACCOUNT_GETACCOUNT_CANDIDATES = {"F", "G", "E", "H"};
+
+    // ── 混淆方法名候选 ──
+    /** HttpClientManager.getOkHttpClient() — 混淆名候选 */
+    private static final String[] GET_CLIENT_METHOD_CANDIDATES = {"h", "g", "i", "f"};
+    /** RetrofitClientHolder.noRedirectClient 字段 — 混淆名候选 */
+    private static final String[] NO_REDIRECT_FIELD_CANDIDATES = {"f112762c", "f112763c", "c", "a"};
+    /** CourseVideoEvent.setVideoJson() — 混淆方法名候选 */
+    private static final String[] SET_VIDEO_JSON_CANDIDATES = {"d", "e", "c"};
+    /** CourseVideoEvent.setCourseDotRes() — 混淆方法名候选 */
+    private static final String[] SET_DOT_RES_CANDIDATES = {"c", "d", "b"};
+
+    private final ClassFinder finder;
 
     private static final String ENC_SALT = "d_yHJ!$pdA~5";
     private static final String URL_FMT =
@@ -86,6 +88,7 @@ public class VideoHook {
     public VideoHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
+        this.finder = new ClassFinder(cl);
     }
 
     public void hook() throws Throwable {
@@ -573,31 +576,46 @@ public class VideoHook {
             Object eventBus = eventBusClass.getMethod("getDefault").invoke(null);
 
             // 创建 CourseVideoEvent 事件对象
-            Class<?> eventClass = Class.forName(COURSE_VIDEO_EVENT, false, cl);
+            Class<?> eventClass = finder.resolve(
+                    CxClasses.COURSE_VIDEO_EVENT, COURSE_EVENT_CANDIDATES);
+            if (eventClass == null) {
+                Logx.w("VideoHook: CourseVideoEvent class not found");
+                return;
+            }
             Object event = eventClass.getDeclaredConstructor().newInstance();
 
-            // setVideoJson(d(String)) — 设置 CoursePlayerData JSON
+            // setVideoJson — 设置 CoursePlayerData JSON
             if (videoJson != null) {
-                try {
-                    Method setVideoJson = eventClass.getDeclaredMethod(
-                            SET_VIDEO_JSON_METHOD, String.class);
-                    setVideoJson.invoke(event, videoJson);
-                } catch (NoSuchMethodException e) {
-                    // 回退: 直接写 videoJson 字段 (f68878a)
+                boolean set = false;
+                for (String mName : SET_VIDEO_JSON_CANDIDATES) {
+                    try {
+                        Method setVideoJson = eventClass.getDeclaredMethod(mName, String.class);
+                        setVideoJson.invoke(event, videoJson);
+                        set = true;
+                        break;
+                    } catch (NoSuchMethodException ignored) {}
+                }
+                if (!set) {
+                    // 回退: 直接写第一个 String 字段
                     Field f = eventClass.getDeclaredFields()[0];
                     f.setAccessible(true);
                     f.set(event, videoJson);
                 }
             }
 
-            // setCourseDotRes(c(String)) — 设置任务点结果 JSON (result=1)
+            // setCourseDotRes — 设置任务点结果 JSON (result=1)
             String dotResJson = "{\"result\":1,\"isPassed\":true}";
-            try {
-                Method setCourseDotRes = eventClass.getDeclaredMethod(
-                        SET_COURSE_DOT_RES_METHOD, String.class);
-                setCourseDotRes.invoke(event, dotResJson);
-            } catch (NoSuchMethodException e) {
-                // 回退: 直接写 courseDotRes 字段 (f68879b)
+            boolean dotSet = false;
+            for (String mName : SET_DOT_RES_CANDIDATES) {
+                try {
+                    Method setCourseDotRes = eventClass.getDeclaredMethod(mName, String.class);
+                    setCourseDotRes.invoke(event, dotResJson);
+                    dotSet = true;
+                    break;
+                } catch (NoSuchMethodException ignored) {}
+            }
+            if (!dotSet) {
+                // 回退: 直接写第二个字段
                 if (eventClass.getDeclaredFields().length > 1) {
                     Field f = eventClass.getDeclaredFields()[1];
                     f.setAccessible(true);
@@ -682,21 +700,27 @@ public class VideoHook {
      * 备选: RetrofitClientHolder.noRedirectClient — 进度上报专用客户端
      */
     private Object getAppOkHttpClient() {
-        // 首选: HttpClientManager(j9.f).getOkHttpClient(h)
-        try {
-            Class<?> cls = Class.forName(HTTP_CLIENT_MANAGER, false, cl);
-            return cls.getDeclaredMethod(GET_OKHTTPCLIENT_METHOD).invoke(null);
-        } catch (Throwable t) {
-            Logx.w("VideoHook: HttpClientManager.getOkHttpClient() failed: " + t.getMessage());
+        // 首选: HttpClientManager.getOkHttpClient() — 使用候选名尝试
+        Class<?> cls = finder.resolve(CxClasses.HTTP_CLIENT_MANAGER, HTTP_CLIENT_CANDIDATES);
+        if (cls != null) {
+            for (String methodName : GET_CLIENT_METHOD_CANDIDATES) {
+                try {
+                    return cls.getDeclaredMethod(methodName).invoke(null);
+                } catch (Throwable ignored) {}
+            }
+            Logx.w("VideoHook: HttpClientManager found but no getter method matched");
         }
-        // 备选: RetrofitClientHolder(de.s$a).noRedirectClient(f112762c)
-        try {
-            Class<?> cls = Class.forName(RETROFIT_CLIENT_HOLDER, false, cl);
-            Field f = cls.getDeclaredField(NO_REDIRECT_CLIENT_FIELD);
-            f.setAccessible(true);
-            return f.get(null);
-        } catch (Throwable t) {
-            Logx.w("VideoHook: RetrofitClientHolder.noRedirectClient failed: " + t.getMessage());
+        // 备选: RetrofitClientHolder.noRedirectClient
+        Class<?> retCls = finder.resolve(CxClasses.RETROFIT_CLIENT_HOLDER, RETROFIT_HOLDER_CANDIDATES);
+        if (retCls != null) {
+            for (String fieldName : NO_REDIRECT_FIELD_CANDIDATES) {
+                try {
+                    Field f = retCls.getDeclaredField(fieldName);
+                    f.setAccessible(true);
+                    return f.get(null);
+                } catch (Throwable ignored) {}
+            }
+            Logx.w("VideoHook: RetrofitClientHolder found but no field matched");
         }
         return null;
     }
@@ -854,10 +878,30 @@ public class VideoHook {
     private String getPuid() {
         try {
             Class<?> amClass = Class.forName(ACCOUNT_MGR_CLASS, false, cl);
-            // AccountManager.getInstance() — 混淆名 E()
-            Object mgr = amClass.getMethod(ACCOUNT_GET_INSTANCE).invoke(null);
-            // AccountManager.getAccount() — 混淆名 F()
-            Object account = mgr.getClass().getMethod(ACCOUNT_GET_ACCOUNT).invoke(mgr);
+            // AccountManager.getInstance() — 尝试候选混淆名
+            Object mgr = null;
+            String instanceMethod = CxClasses.ACCOUNT_GET_INSTANCE_METHOD;
+            if (instanceMethod != null && !instanceMethod.isEmpty()) {
+                try { mgr = amClass.getMethod(instanceMethod).invoke(null); } catch (Throwable ignored) {}
+            }
+            if (mgr == null) {
+                for (String m : ACCOUNT_INSTANCE_CANDIDATES) {
+                    try { mgr = amClass.getMethod(m).invoke(null); break; } catch (Throwable ignored) {}
+                }
+            }
+            if (mgr == null) return "";
+            // AccountManager.getAccount() — 尝试候选混淆名
+            Object account = null;
+            String accountMethod = CxClasses.ACCOUNT_GET_ACCOUNT_METHOD;
+            if (accountMethod != null && !accountMethod.isEmpty()) {
+                try { account = mgr.getClass().getMethod(accountMethod).invoke(mgr); } catch (Throwable ignored) {}
+            }
+            if (account == null) {
+                for (String m : ACCOUNT_GETACCOUNT_CANDIDATES) {
+                    try { account = mgr.getClass().getMethod(m).invoke(mgr); break; } catch (Throwable ignored) {}
+                }
+            }
+            if (account == null) return "";
             String puid = (String) account.getClass().getMethod("getPuid").invoke(account);
             return puid != null ? puid : "";
         } catch (Throwable t) {

@@ -41,6 +41,25 @@ public final class CxClasses {
     public static String BD_LOCATION = "";
     public static String BD_LOCATION_LISTENER = "";
 
+    // === 反检测 — 混淆类 (每版本可能变化, 服务端下发 + 本地fallback) ===
+    public static String EVERISK_RISK_DISPATCHER = "";
+    public static String XPOSED_HOOK_DETECTOR = "";
+    public static String ROOT_DETECTION_UTIL = "";
+    public static String DEVICE_INFO_UTIL = "";
+    public static String MAGISK_MOUNT_DETECTOR = "";
+    public static String ENVIRONMENT_DETECTOR = "";
+
+    // === 视频 — 混淆类 ===
+    public static String HTTP_CLIENT_MANAGER = "";
+    public static String RETROFIT_CLIENT_HOLDER = "";
+    public static String COURSE_VIDEO_EVENT = "";
+    public static String ACCOUNT_GET_INSTANCE_METHOD = "";
+    public static String ACCOUNT_GET_ACCOUNT_METHOD = "";
+
+    // === 考试监控 ===
+    public static String SCREEN_MONITOR_DISPATCHER = "";
+    public static String EXAM_EVERISK_PROTOCOL = "";
+
     private static boolean ready = false;
 
     public static void init(Map<String, String> classes) {
@@ -70,6 +89,23 @@ public final class CxClasses {
         WEBAPP_VIEWER_ACTIVITY = cls(classes, "WEBAPP_VIEWER_ACTIVITY");
         BD_LOCATION = cls(classes, "BD_LOCATION");
         BD_LOCATION_LISTENER = cls(classes, "BD_LOCATION_LISTENER");
+
+        EVERISK_RISK_DISPATCHER = cls(classes, "EVERISK_RISK_DISPATCHER");
+        XPOSED_HOOK_DETECTOR = cls(classes, "XPOSED_HOOK_DETECTOR");
+        ROOT_DETECTION_UTIL = cls(classes, "ROOT_DETECTION_UTIL");
+        DEVICE_INFO_UTIL = cls(classes, "DEVICE_INFO_UTIL");
+        MAGISK_MOUNT_DETECTOR = cls(classes, "MAGISK_MOUNT_DETECTOR");
+        ENVIRONMENT_DETECTOR = cls(classes, "ENVIRONMENT_DETECTOR");
+
+        HTTP_CLIENT_MANAGER = cls(classes, "HTTP_CLIENT_MANAGER");
+        RETROFIT_CLIENT_HOLDER = cls(classes, "RETROFIT_CLIENT_HOLDER");
+        COURSE_VIDEO_EVENT = cls(classes, "COURSE_VIDEO_EVENT");
+        ACCOUNT_GET_INSTANCE_METHOD = cls(classes, "ACCOUNT_GET_INSTANCE_METHOD");
+        ACCOUNT_GET_ACCOUNT_METHOD = cls(classes, "ACCOUNT_GET_ACCOUNT_METHOD");
+
+        SCREEN_MONITOR_DISPATCHER = cls(classes, "SCREEN_MONITOR_DISPATCHER");
+        EXAM_EVERISK_PROTOCOL = cls(classes, "EXAM_EVERISK_PROTOCOL");
+
         ready = true;
     }
 

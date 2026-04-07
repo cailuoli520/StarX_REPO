@@ -2,6 +2,7 @@ package org.xiyu.starx.hook;
 
 import android.os.Build;
 
+import org.xiyu.starx.util.ClassFinder;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
 
@@ -28,27 +29,39 @@ import io.github.libxposed.api.XposedModule;
 public class DetectionBypassHook {
     private final XposedModule module;
     private final ClassLoader cl;
+    private final ClassFinder finder;
 
-    // ── 反编译映射: 混淆名 → 可读名 ──
-    /** com.coralline.sea01.y = EveriskRiskDispatcher — 18种风控检测的统一分发器 */
-    private static final String EVERISK_RISK_DISPATCHER = "com.coralline.sea01.y";
-    /** com.baidu.mshield.x6.c.a = XposedHookDetector — Baidu 盾 methodCache 反射检测 */
-    private static final String XPOSED_HOOK_DETECTOR = "com.baidu.mshield.x6.c.a";
-    /** com.chaoxing.mobile.study.util.b = RootDetectionUtil — tags/su/which 检测 */
-    private static final String ROOT_DETECTION_UTIL = "com.chaoxing.mobile.study.util.b";
-    /** com.chaoxing.mobile.p = DeviceInfoUtil — 设备信息收集 + Root 检测 (e()=isDeviceRooted) */
-    private static final String DEVICE_INFO_UTIL = "com.chaoxing.mobile.p";
-    /** com.coralline.sea01.v = MagiskMountDetector — mountinfo 扫描 magisk/zygisk/KSU */
-    private static final String MAGISK_MOUNT_DETECTOR = "com.coralline.sea01.v";
-    /** fh.a = EnvironmentDetector — 模拟定位/开发者模式/USB调试检测 */
-    private static final String ENVIRONMENT_DETECTOR = "fh.a";
-    // 注意: 已移除 ANTI_DEBUG_PROTECTOR (com.secneo.apkwrapper.H)
-    // secneo 包所有方法含字节码篡改标记 int[] iArr = new int[0], 直接 hook 会被 native 层检测!
-    // TracerPid 反调试已改为 hook BufferedReader.readLine() 在文件读取层伪装
+    // ── 反编译映射: 已知候选名 (不同版本可能不同) ──
+    /** EverISK 风控统一分发器 — 候选名 */
+    private static final String[] EVERISK_CANDIDATES = {
+            "com.coralline.sea01.y", "com.coralline.sea01.x", "com.coralline.sea01.z"
+    };
+    /** Baidu 盾 Xposed 检测 — 候选名 */
+    private static final String[] MSHIELD_CANDIDATES = {
+            "com.baidu.mshield.x6.c.a", "com.baidu.mshield.x6.d.a", "com.baidu.mshield.x6.b.a"
+    };
+    /** Root 检测 (study.util) — 候选名 */
+    private static final String[] ROOT_UTIL_CANDIDATES = {
+            "com.chaoxing.mobile.study.util.b", "com.chaoxing.mobile.study.util.c",
+            "com.chaoxing.mobile.study.util.a"
+    };
+    /** 设备信息/Root 检测 — 候选名 */
+    private static final String[] DEVICE_UTIL_CANDIDATES = {
+            "com.chaoxing.mobile.p", "com.chaoxing.mobile.q", "com.chaoxing.mobile.o"
+    };
+    /** Magisk mountinfo 扫描 — 候选名 */
+    private static final String[] MAGISK_CANDIDATES = {
+            "com.coralline.sea01.v", "com.coralline.sea01.u", "com.coralline.sea01.w"
+    };
+    /** 环境检测 — 候选名 */
+    private static final String[] ENV_CANDIDATES = {
+            "fh.a", "gh.a", "eh.a", "fi.a"
+    };
 
     public DetectionBypassHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
+        this.finder = new ClassFinder(cl);
     }
 
     public void hook() throws Throwable {
@@ -75,7 +88,12 @@ public class DetectionBypassHook {
      */
     private void hookEveriskDispatcher() {
         try {
-            Class<?> dispatcherClass = Class.forName(EVERISK_RISK_DISPATCHER, false, cl);
+            Class<?> dispatcherClass = finder.resolve(
+                    CxClasses.EVERISK_RISK_DISPATCHER, EVERISK_CANDIDATES);
+            if (dispatcherClass == null) {
+                Logx.w("DetectionBypassHook: EverISK dispatcher not found in any candidate");
+                return;
+            }
             Class<?> typeClass = Class.forName("com.bangcle.everisk.core.Type", false, cl);
             Class<?> jsonClass = Class.forName("org.json.JSONObject", false, cl);
 
@@ -110,7 +128,12 @@ public class DetectionBypassHook {
      */
     private void hookBaiduMshield() {
         try {
-            Class<?> mshieldClass = Class.forName(XPOSED_HOOK_DETECTOR, false, cl);
+            Class<?> mshieldClass = finder.resolve(
+                    CxClasses.XPOSED_HOOK_DETECTOR, MSHIELD_CANDIDATES);
+            if (mshieldClass == null) {
+                Logx.w("DetectionBypassHook: Baidu mshield not found in any candidate");
+                return;
+            }
             for (Method m : mshieldClass.getDeclaredMethods()) {
                 Class<?>[] params = m.getParameterTypes();
                 // 匹配 int a(String, String, String) — 静态方法
@@ -128,8 +151,6 @@ public class DetectionBypassHook {
                     break;
                 }
             }
-        } catch (ClassNotFoundException e) {
-            Logx.w("DetectionBypassHook: Baidu mshield not found, skip");
         } catch (Throwable t) {
             Logx.e("DetectionBypassHook: hookBaiduMshield failed", t);
         }
@@ -143,7 +164,12 @@ public class DetectionBypassHook {
      */
     private void hookChaoxingRootDetect() {
         try {
-            Class<?> rootClass = Class.forName(ROOT_DETECTION_UTIL, false, cl);
+            Class<?> rootClass = finder.resolve(
+                    CxClasses.ROOT_DETECTION_UTIL, ROOT_UTIL_CANDIDATES);
+            if (rootClass == null) {
+                Logx.w("DetectionBypassHook: study.util root detection not found");
+                return;
+            }
             // Hook 所有返回 boolean 的无参静态方法 (c, d, e)
             for (Method m : rootClass.getDeclaredMethods()) {
                 if (m.getParameterTypes().length == 0
@@ -164,8 +190,6 @@ public class DetectionBypassHook {
                 }
             }
             Logx.i("DetectionBypassHook: hooked study.util.b root detection");
-        } catch (ClassNotFoundException e) {
-            Logx.w("DetectionBypassHook: study.util.b not found, skip");
         } catch (Throwable t) {
             Logx.e("DetectionBypassHook: hookChaoxingRootDetect failed", t);
         }
@@ -177,7 +201,12 @@ public class DetectionBypassHook {
      */
     private void hookChaoxingDeviceRootDetect() {
         try {
-            Class<?> deviceClass = Class.forName(DEVICE_INFO_UTIL, false, cl);
+            Class<?> deviceClass = finder.resolve(
+                    CxClasses.DEVICE_INFO_UTIL, DEVICE_UTIL_CANDIDATES);
+            if (deviceClass == null) {
+                Logx.w("DetectionBypassHook: mobile.p device root not found");
+                return;
+            }
             for (Method m : deviceClass.getDeclaredMethods()) {
                 if (m.getParameterTypes().length == 0
                         && m.getReturnType() == boolean.class
@@ -186,8 +215,6 @@ public class DetectionBypassHook {
                 }
             }
             Logx.i("DetectionBypassHook: hooked mobile.p root detection");
-        } catch (ClassNotFoundException e) {
-            Logx.w("DetectionBypassHook: mobile.p not found, skip");
         } catch (Throwable t) {
             Logx.e("DetectionBypassHook: hookChaoxingDeviceRootDetect failed", t);
         }
@@ -200,7 +227,12 @@ public class DetectionBypassHook {
      */
     private void hookMagiskDetect() {
         try {
-            Class<?> magiskClass = Class.forName(MAGISK_MOUNT_DETECTOR, false, cl);
+            Class<?> magiskClass = finder.resolve(
+                    CxClasses.MAGISK_MOUNT_DETECTOR, MAGISK_CANDIDATES);
+            if (magiskClass == null) {
+                Logx.w("DetectionBypassHook: Magisk detector not found in any candidate");
+                return;
+            }
             for (Method m : magiskClass.getDeclaredMethods()) {
                 Class<?>[] params = m.getParameterTypes();
                 if (params.length == 1
@@ -215,8 +247,6 @@ public class DetectionBypassHook {
                     break;
                 }
             }
-        } catch (ClassNotFoundException e) {
-            Logx.w("DetectionBypassHook: sea01.v not found, skip");
         } catch (Throwable t) {
             Logx.e("DetectionBypassHook: hookMagiskDetect failed", t);
         }
@@ -335,7 +365,12 @@ public class DetectionBypassHook {
      */
     private void hookEnvironmentDetect() {
         try {
-            Class<?> envClass = Class.forName(ENVIRONMENT_DETECTOR, false, cl);
+            Class<?> envClass = finder.resolve(
+                    CxClasses.ENVIRONMENT_DETECTOR, ENV_CANDIDATES);
+            if (envClass == null) {
+                Logx.w("DetectionBypassHook: environment detector not found");
+                return;
+            }
 
             // Hook 所有返回 boolean 的静态方法 (a, b, c) → false
             for (Method m : envClass.getDeclaredMethods()) {
@@ -350,8 +385,6 @@ public class DetectionBypassHook {
                 }
             }
             Logx.i("DetectionBypassHook: hooked fh.a environment detection (mock/dev/usb)");
-        } catch (ClassNotFoundException e) {
-            Logx.w("DetectionBypassHook: fh.a not found, skip");
         } catch (Throwable t) {
             Logx.e("DetectionBypassHook: hookEnvironmentDetect failed", t);
         }
