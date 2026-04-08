@@ -20,6 +20,7 @@ import android.widget.Toast;
 import org.xiyu.starx.util.ClassFinder;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.SecureOverlay;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -273,29 +274,20 @@ public class VideoHook {
                             String videoKey = getVideoKey(courseVideo, courseVideoClass);
 
                             // ★ 已完成的视频: 让后续定时器调用正常通过, 不再修改
-                            // 避免每60秒重复发送 TYPE_COMPLETE 导致服务器返回203回滚
                             if (completedVideos.contains(videoKey)) {
                                 return chain.proceed();
                             }
 
                             completedVideos.add(videoKey);
-                            fireBatchComplete(courseVideo, courseVideoClass);
 
-                            // 仅首次: 修改本次调用为 TYPE_COMPLETE + 满时长
-                            // 通过 app 的 S() → LiveData → Ta() → EventBus 更新章节页UI
-                            int durationSec = (int) courseVideoClass
-                                    .getMethod("getDuration").invoke(courseVideo);
-                            resetDedup(vm, courseVmClass);
-                            Logx.i("VideoHook: faking complete (d=" + durationSec + "s)");
-                            return chain.proceed(new Object[]{
-                                    chain.getArg(0),          // context
-                                    durationSec * 1000,       // position (ms)
-                                    4,                        // TYPE_COMPLETE
-                                    chain.getArg(3),          // oldPosition
-                                    chain.getArg(4),          // source string
-                                    chain.getArg(5),          // lifecycleOwner
-                                    chain.getArg(6)           // callback
+                            // ★ 仅通过后台批量上报完成视频，不修改当前 S() 调用参数
+                            // 修改 S() 参数会导致 app 自身也发 COMPLETE 报告，与批量上报冲突
+                            // 批量上报完成后再通过 EventBus 更新章节页 UI
+                            fireBatchComplete(courseVideo, courseVideoClass, () -> {
+                                new Handler(Looper.getMainLooper()).post(() ->
+                                        postCompletionEvent(null));
                             });
+                            Logx.i("VideoHook: batch complete initiated for " + videoKey);
                         }
                     } catch (Throwable t) {
                         Logx.w("VideoHook: progress override failed: " + t.getMessage());
@@ -410,40 +402,54 @@ public class VideoHook {
                 panel.addView(btn);
             }
 
-            // 添加到 Activity 的 DecorView (最顶层)，避免被视频 SurfaceView 拦截触摸
+            // 添加到安全浮窗 (FLAG_SECURE — 不可被录屏/截屏捕获)
             try {
-                Activity activity = (Activity) rootView.getContext();
-                ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+                Activity activity = SecureOverlay.asActivity(rootView.getContext());
+                if (activity == null) throw new RuntimeException("not an Activity context");
 
+                ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
                 // 防止重复注入 (tag on decorView)
                 if (decorView.getTag(PANEL_TAG_KEY) != null) {
                     Logx.i("VideoHook: panel already injected on decor");
                     return;
                 }
 
-                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT);
-                lp.gravity = Gravity.TOP | Gravity.START;
-                lp.topMargin = dp(ctx, 8);
-                lp.leftMargin = dp(ctx, 48);
                 panel.setClickable(true);
                 panel.setFocusable(true);
-                decorView.addView(panel, lp);
+                SecureOverlay.addSecureView(activity, panel,
+                        Gravity.TOP | Gravity.START, dp(ctx, 48), dp(ctx, 8));
                 decorView.setTag(PANEL_TAG_KEY, panel);
-                Logx.i("VideoHook: control panel injected on DecorView");
+                Logx.i("VideoHook: control panel injected via SecureOverlay");
             } catch (Throwable t2) {
-                // 回退: 添加到 Fragment 根视图
-                if (rootView instanceof ViewGroup) {
+                // 回退: 添加到 Fragment 根视图 (无防录屏)
+                Logx.w("VideoHook: SecureOverlay failed (" + t2.getMessage()
+                        + "), falling back to DecorView");
+                try {
+                    Activity activity = (Activity) rootView.getContext();
+                    ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+                    if (decorView.getTag(PANEL_TAG_KEY) != null) return;
                     FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                             FrameLayout.LayoutParams.WRAP_CONTENT,
                             FrameLayout.LayoutParams.WRAP_CONTENT);
                     lp.gravity = Gravity.TOP | Gravity.START;
                     lp.topMargin = dp(ctx, 8);
                     lp.leftMargin = dp(ctx, 48);
-                    ((ViewGroup) rootView).addView(panel, lp);
-                    rootView.setTag(PANEL_TAG_KEY, panel);
-                    Logx.i("VideoHook: control panel injected (fallback)");
+                    panel.setClickable(true);
+                    panel.setFocusable(true);
+                    decorView.addView(panel, lp);
+                    decorView.setTag(PANEL_TAG_KEY, panel);
+                } catch (Throwable t3) {
+                    if (rootView instanceof ViewGroup) {
+                        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.WRAP_CONTENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT);
+                        lp.gravity = Gravity.TOP | Gravity.START;
+                        lp.topMargin = dp(ctx, 8);
+                        lp.leftMargin = dp(ctx, 48);
+                        ((ViewGroup) rootView).addView(panel, lp);
+                        rootView.setTag(PANEL_TAG_KEY, panel);
+                        Logx.i("VideoHook: control panel injected (fallback)");
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -673,13 +679,13 @@ public class VideoHook {
                 // TYPE_START
                 sendReport(reportUrl, otherInfo, "0", durationSec, jobid,
                         clipTime, clazzId, objectId, puid, 3, rt, 0);
-                Thread.sleep(800);
+                Thread.sleep(2000);
 
                 // TYPE_PLAYING 模拟进度
                 for (int sec = step; sec < durationSec; sec += step) {
                     sendReport(reportUrl, otherInfo, String.valueOf(sec), durationSec,
                             jobid, clipTime, clazzId, objectId, puid, 0, rt, sec);
-                    Thread.sleep(800);
+                    Thread.sleep(2000);
                 }
 
                 // TYPE_COMPLETE

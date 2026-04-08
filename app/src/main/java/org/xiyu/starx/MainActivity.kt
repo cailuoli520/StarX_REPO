@@ -2,18 +2,17 @@ package org.xiyu.starx
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.os.Bundle
+import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedService.OnScopeEventListener
-import org.xiyu.starx.databinding.ActivityMainBinding
-
-import android.content.Intent
-import org.xiyu.starx.license.LicenseManager
 import org.json.JSONObject
+import org.xiyu.starx.databinding.ActivityMainBinding
+import org.xiyu.starx.license.LicenseManager
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -31,8 +30,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val RC_MAP_PICKER = 2001
         private const val TG_GROUP_URL = "https://t.me/+BUfEUGzViTg2YWU1"
 
-        private const val VERSION_CODE = 4
-        private const val VERSION_NAME = "1.1.3"
+        private val VERSION_CODE get() = BuildConfig.VERSION_CODE
+        private val VERSION_NAME get() = BuildConfig.VERSION_NAME
 
         // 功能开关 key
         private const val KEY_DETECTION = "hook_detection_enabled"

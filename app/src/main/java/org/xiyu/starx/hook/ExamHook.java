@@ -1,12 +1,25 @@
 package org.xiyu.starx.hook;
 
+import android.app.Activity;
+import android.content.Context;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.WebView;
+import android.widget.FrameLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 
 import org.xiyu.starx.answer.AnswerProvider;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.SecureOverlay;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -235,16 +248,103 @@ public class ExamHook {
         public String queryAnswer(String question) {
             String preview = question.length() > 60 ? question.substring(0, 60) : question;
             Logx.i("ExamHook[JS→Java]: " + preview);
+            mainHandler.post(() -> android.widget.Toast.makeText(
+                    webView.getContext(), "正在搜题...", android.widget.Toast.LENGTH_SHORT).show());
             AnswerProvider.Result r = answerProvider.queryWithTimeout(question, 20000);
             if (r != null) {
                 Logx.i("★ 答案[" + r.source + "] => " + r.answer);
+                final String src = r.source;
+                final String answer = r.answer;
+                // 在安全浮窗中显示答案 (录屏/截屏不可见)
+                mainHandler.post(() -> showAnswerOverlay(webView.getContext(),
+                        "[" + src + "] " + answer));
                 return r.answer;
             }
+            mainHandler.post(() -> android.widget.Toast.makeText(
+                    webView.getContext(), "✗ 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
             return "";
         }
 
         @android.webkit.JavascriptInterface
         public void log(String msg) { Logx.i("ExamHook[JS]: " + msg); }
+    }
+
+    // =======================================================================
+    // 安全答案浮窗 — FLAG_SECURE 不可被录屏/截屏捕获
+    // =======================================================================
+
+    private View answerOverlayView;
+
+    /**
+     * 在安全浮窗中显示答案文本。
+     * 使用 FLAG_SECURE 窗口，录屏和截屏时该窗口不可见。
+     * 5 秒后自动消失。
+     */
+    private void showAnswerOverlay(Context context, String text) {
+        Activity activity = SecureOverlay.asActivity(context);
+        if (activity == null || activity.isFinishing()) {
+            // 降级为 Toast
+            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // 移除旧浮窗
+        if (answerOverlayView != null) {
+            try {
+                SecureOverlay.removeSecureView(activity, answerOverlayView);
+            } catch (Throwable ignored) {}
+            answerOverlayView = null;
+        }
+
+        try {
+            // 创建答案显示面板
+            int dp8 = dpToPx(context, 8);
+            int dp12 = dpToPx(context, 12);
+
+            TextView tv = new TextView(context);
+            tv.setText(text);
+            tv.setTextColor(Color.WHITE);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            tv.setTypeface(null, Typeface.BOLD);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.argb(200, 30, 60, 120));
+            bg.setCornerRadius(dpToPx(context, 16));
+            tv.setBackground(bg);
+            tv.setPadding(dp12, dp8, dp12, dp8);
+            tv.setMaxWidth(dpToPx(context, 280));
+
+            // 点击关闭
+            final Activity act = activity;
+            tv.setOnClickListener(v -> {
+                try {
+                    SecureOverlay.removeSecureView(act, tv);
+                } catch (Throwable ignored) {}
+                answerOverlayView = null;
+            });
+
+            SecureOverlay.addSecureView(activity, tv,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dpToPx(context, 80));
+            answerOverlayView = tv;
+
+            // 5 秒后自动消失
+            mainHandler.postDelayed(() -> {
+                if (answerOverlayView == tv) {
+                    try {
+                        SecureOverlay.removeSecureView(act, tv);
+                    } catch (Throwable ignored) {}
+                    answerOverlayView = null;
+                }
+            }, 5000);
+
+            Logx.i("ExamHook: answer overlay shown (secure)");
+        } catch (Throwable t) {
+            Logx.w("ExamHook: secure overlay failed: " + t.getMessage());
+            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private static int dpToPx(Context ctx, int dp) {
+        return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     // =======================================================================
