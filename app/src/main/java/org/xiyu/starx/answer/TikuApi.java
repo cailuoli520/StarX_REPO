@@ -1,5 +1,6 @@
 package org.xiyu.starx.answer;
 
+import org.xiyu.starx.util.ActiveConnection;
 import org.xiyu.starx.util.Logx;
 
 import java.net.HttpURLConnection;
@@ -36,6 +37,7 @@ public class TikuApi {
         if (cleaned.length() < 2) return null;
 
         for (String endpoint : ENDPOINTS) {
+            if (Thread.currentThread().isInterrupted()) return null;
             try {
                 String answer = queryEndpoint(endpoint, cleaned);
                 if (answer != null && !answer.isEmpty()) {
@@ -53,6 +55,7 @@ public class TikuApi {
         String urlStr = endpoint + URLEncoder.encode(question, "UTF-8");
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        ActiveConnection.set(conn);
         try {
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(TIMEOUT_MS);
@@ -89,6 +92,7 @@ public class TikuApi {
             }
             return body.isEmpty() ? null : body;
         } finally {
+            ActiveConnection.clear();
             conn.disconnect();
         }
     }

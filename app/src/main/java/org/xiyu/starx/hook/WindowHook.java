@@ -1,10 +1,13 @@
 package org.xiyu.starx.hook;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.res.Configuration;
 import android.view.View;
 import android.webkit.WebView;
 
+import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
 
 import java.lang.reflect.Method;
@@ -18,6 +21,29 @@ public class WindowHook {
     public WindowHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
+    }
+
+    private static boolean isExamActivity(Object activity) {
+        if (activity == null) return false;
+        String cls = activity.getClass().getName();
+        // 优先匹配服务端下发的确切类名（可靠，不受混淆影响）
+        String wa = CxClasses.WEBAPP_VIEWER_ACTIVITY;
+        if (wa != null && !wa.isEmpty() && cls.equals(wa)) return true;
+        // 回退到关键字启发式
+        String lower = cls.toLowerCase();
+        return lower.contains("exam") || lower.contains("test")
+                || lower.contains("webapp") || lower.contains("quiz");
+    }
+
+    /**
+     * 从 View 的 Context 链中解包 Activity，判断是否属于考试页面
+     */
+    private static boolean isExamContext(Context context) {
+        while (context instanceof ContextWrapper) {
+            if (context instanceof Activity) return isExamActivity(context);
+            context = ((ContextWrapper) context).getBaseContext();
+        }
+        return false;
     }
 
     public void hook() throws Throwable {
@@ -35,8 +61,11 @@ public class WindowHook {
     private void hookMultiWindowMode() {
         try {
             Method isInMultiWindow = Activity.class.getDeclaredMethod("isInMultiWindowMode");
-            module.hook(isInMultiWindow).intercept(chain -> false);
-            Logx.i("WindowHook: hooked isInMultiWindowMode() -> false");
+            module.hook(isInMultiWindow).intercept(chain -> {
+                if (isExamActivity(chain.getThisObject())) return false;
+                return chain.proceed();
+            });
+            Logx.i("WindowHook: hooked isInMultiWindowMode (exam only)");
         } catch (Throwable t) {
             Logx.w("WindowHook: isInMultiWindowMode hook failed: " + t.getMessage());
         }
@@ -45,9 +74,12 @@ public class WindowHook {
             Method onMultiWindowChanged = Activity.class.getDeclaredMethod(
                     "onMultiWindowModeChanged", boolean.class, Configuration.class);
             module.hook(onMultiWindowChanged).intercept(chain -> {
-                return chain.proceed(new Object[]{false, chain.getArg(1)});
+                if (isExamActivity(chain.getThisObject())) {
+                    return chain.proceed(new Object[]{false, chain.getArg(1)});
+                }
+                return chain.proceed();
             });
-            Logx.i("WindowHook: hooked onMultiWindowModeChanged -> false");
+            Logx.i("WindowHook: hooked onMultiWindowModeChanged (exam only)");
         } catch (Throwable t) {
             Logx.w("WindowHook: onMultiWindowModeChanged hook failed: " + t.getMessage());
         }
@@ -59,8 +91,11 @@ public class WindowHook {
     private void hookPipMode() {
         try {
             Method isInPip = Activity.class.getDeclaredMethod("isInPictureInPictureMode");
-            module.hook(isInPip).intercept(chain -> false);
-            Logx.i("WindowHook: hooked isInPictureInPictureMode() -> false");
+            module.hook(isInPip).intercept(chain -> {
+                if (isExamActivity(chain.getThisObject())) return false;
+                return chain.proceed();
+            });
+            Logx.i("WindowHook: hooked isInPictureInPictureMode (exam only)");
         } catch (Throwable t) {
             Logx.w("WindowHook: isInPictureInPictureMode hook failed: " + t.getMessage());
         }
@@ -79,10 +114,16 @@ public class WindowHook {
                     "onWindowVisibilityChanged", int.class);
             onWindowVis.setAccessible(true);
             module.hook(onWindowVis).intercept(chain -> {
-                // 始终告诉 WebView 窗口可见
-                return chain.proceed(new Object[]{View.VISIBLE});
+                Object wv = chain.getThisObject();
+                if (wv instanceof View) {
+                    Context ctx = ((View) wv).getContext();
+                    if (isExamContext(ctx)) {
+                        return chain.proceed(new Object[]{View.VISIBLE});
+                    }
+                }
+                return chain.proceed();
             });
-            Logx.i("WindowHook: hooked WebView.onWindowVisibilityChanged → VISIBLE");
+            Logx.i("WindowHook: hooked WebView.onWindowVisibilityChanged (exam only)");
         } catch (Throwable t) {
             Logx.w("WindowHook: WebView visibility hook failed: " + t.getMessage());
         }
@@ -93,9 +134,16 @@ public class WindowHook {
                     "dispatchWindowVisibilityChanged", int.class);
             dispatch.setAccessible(true);
             module.hook(dispatch).intercept(chain -> {
-                return chain.proceed(new Object[]{View.VISIBLE});
+                Object wv = chain.getThisObject();
+                if (wv instanceof View) {
+                    Context ctx = ((View) wv).getContext();
+                    if (isExamContext(ctx)) {
+                        return chain.proceed(new Object[]{View.VISIBLE});
+                    }
+                }
+                return chain.proceed();
             });
-            Logx.i("WindowHook: hooked WebView.dispatchWindowVisibilityChanged → VISIBLE");
+            Logx.i("WindowHook: hooked WebView.dispatchWindowVisibilityChanged (exam only)");
         } catch (Throwable t) {
             // dispatchWindowVisibilityChanged 可能未被 WebView 覆写, 忽略
         }
@@ -114,9 +162,16 @@ public class WindowHook {
                     "onWindowFocusChanged", boolean.class);
             onFocus.setAccessible(true);
             module.hook(onFocus).intercept(chain -> {
-                return chain.proceed(new Object[]{true});
+                Object wv = chain.getThisObject();
+                if (wv instanceof View) {
+                    Context ctx = ((View) wv).getContext();
+                    if (isExamContext(ctx)) {
+                        return chain.proceed(new Object[]{true});
+                    }
+                }
+                return chain.proceed();
             });
-            Logx.i("WindowHook: hooked WebView.onWindowFocusChanged → true");
+            Logx.i("WindowHook: hooked WebView.onWindowFocusChanged (exam only)");
         } catch (Throwable t) {
             Logx.w("WindowHook: WebView focus hook failed: " + t.getMessage());
         }

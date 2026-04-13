@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ios_bg_start">#FF0D1118</color>
+    <color name="ios_bg_center">#FF111722</color>
+    <color name="ios_bg_end">#FF0A0E15</color>
+
+    <color name="ios_blue">#FF0A84FF</color>
+    <color name="ios_blue_ripple">#400A84FF</color>
+    <color name="ios_green">#FF30D158</color>
+    <color name="ios_red">#FFFF453A</color>
+
+    <color name="ios_label">#FFF5F7FA</color>
+    <color name="ios_secondary_label">#FFB0B8C6</color>
+    <color name="ios_tertiary_label">#FF7B8494</color>
+
+    <color name="ios_separator">#22FFFFFF</color>
+    <color name="ios_card">#22161D26</color>
+    <color name="ios_card_top">#38273142</color>
+    <color name="ios_card_bottom">#221A2230</color>
+    <color name="ios_card_stroke">#2EFFFFFF</color>
+
+    <color name="ios_panel_top">#4A243042</color>
+    <color name="ios_panel_bottom">#3019222F</color>
+    <color name="ios_panel_stroke">#33FFFFFF</color>
+
+    <color name="ios_chip_top">#3D2D3647</color>
+    <color name="ios_chip_bottom">#26212A38</color>
+    <color name="ios_chip_stroke">#36FFFFFF</color>
+
+    <color name="ios_input_bg">#1F161D28</color>
+    <color name="ios_input_top">#3026323F</color>
+    <color name="ios_input_bottom">#1D1B2431</color>
+    <color name="ios_input_stroke">#2BFFFFFF</color>
+
+    <color name="ios_map_search_top">#442A3240</color>
+    <color name="ios_map_search_bottom">#2A1B2430</color>
+
+    <color name="ios_secondary_button_top">#66434B59</color>
+    <color name="ios_secondary_button_bottom">#4A39414F</color>
+    <color name="ios_secondary_button_stroke">#33FFFFFF</color>
+    <color name="ios_secondary_button_ripple">#30FFFFFF</color>
+
+    <color name="ios_switch_off_track">#FF384253</color>
+
+    <color name="ios_green_bg">#3330D158</color>
+    <color name="ios_red_bg">#33FF453A</color>
+
+    <color name="ic_launcher_background">#263278</color>
+</resources>

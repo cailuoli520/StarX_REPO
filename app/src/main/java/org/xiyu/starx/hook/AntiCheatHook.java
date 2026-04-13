@@ -27,13 +27,32 @@ public class AntiCheatHook {
     private final ClassLoader cl;
     private final ClassFinder finder;
 
+    /** 考试页面是否处于前台，用于 getRunningAppProcesses 等全局 hook 的守卫 */
+    private static volatile boolean examInForeground = false;
+
     public AntiCheatHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
         this.finder = new ClassFinder(cl);
     }
 
+    /**
+     * 判断 Activity 是否属于考试/测验相关页面
+     */
+    private static boolean isExamActivity(Object activity) {
+        if (activity == null) return false;
+        String cls = activity.getClass().getName();
+        // 优先匹配服务端下发的确切类名（可靠，不受混淆影响）
+        String wa = CxClasses.WEBAPP_VIEWER_ACTIVITY;
+        if (wa != null && !wa.isEmpty() && cls.equals(wa)) return true;
+        // 回退到关键字启发式
+        String lower = cls.toLowerCase();
+        return lower.contains("exam") || lower.contains("test")
+                || lower.contains("webapp") || lower.contains("quiz");
+    }
+
     public void hook() throws Throwable {
+        trackExamLifecycle();
         hookWindowFocus();
         hookTopResumedActivity();
         hookFaceCollectBySignature();
@@ -46,6 +65,33 @@ public class AntiCheatHook {
     }
 
     /**
+     * 跟踪考试页面的生命周期，维护 examInForeground 标志。
+     * 供 getRunningAppProcesses 等全局 hook 用作守卫条件。
+     */
+    private void trackExamLifecycle() {
+        try {
+            Method onResume = Activity.class.getDeclaredMethod("onResume");
+            module.hook(onResume).intercept(chain -> {
+                if (isExamActivity(chain.getThisObject())) {
+                    examInForeground = true;
+                }
+                return chain.proceed();
+            });
+
+            Method onPause = Activity.class.getDeclaredMethod("onPause");
+            module.hook(onPause).intercept(chain -> {
+                if (isExamActivity(chain.getThisObject())) {
+                    examInForeground = false;
+                }
+                return chain.proceed();
+            });
+            Logx.i("AntiCheatHook: exam lifecycle tracking installed");
+        } catch (Throwable t) {
+            Logx.w("AntiCheatHook: exam lifecycle tracking failed: " + t.getMessage());
+        }
+    }
+
+    /**
      * Hook Activity.onWindowFocusChanged — 始终回调 hasFocus=true
      * Hook Activity.hasWindowFocus — 始终返回 true
      */
@@ -53,13 +99,19 @@ public class AntiCheatHook {
         try {
             Method onWindowFocusChanged = Activity.class.getDeclaredMethod("onWindowFocusChanged", boolean.class);
             module.hook(onWindowFocusChanged).intercept(chain -> {
-                return chain.proceed(new Object[]{true});
+                if (isExamActivity(chain.getThisObject())) {
+                    return chain.proceed(new Object[]{true});
+                }
+                return chain.proceed();
             });
 
             Method hasWindowFocus = Activity.class.getDeclaredMethod("hasWindowFocus");
-            module.hook(hasWindowFocus).intercept(chain -> true);
+            module.hook(hasWindowFocus).intercept(chain -> {
+                if (isExamActivity(chain.getThisObject())) return true;
+                return chain.proceed();
+            });
 
-            Logx.i("AntiCheatHook: hooked window focus detection");
+            Logx.i("AntiCheatHook: hooked window focus detection (exam only)");
         } catch (Throwable t) {
             Logx.e("AntiCheatHook: hookWindowFocus failed", t);
         }
@@ -72,9 +124,12 @@ public class AntiCheatHook {
         try {
             Method onTopResumed = Activity.class.getDeclaredMethod("onTopResumedActivityChanged", boolean.class);
             module.hook(onTopResumed).intercept(chain -> {
-                return chain.proceed(new Object[]{true});
+                if (isExamActivity(chain.getThisObject())) {
+                    return chain.proceed(new Object[]{true});
+                }
+                return chain.proceed();
             });
-            Logx.i("AntiCheatHook: hooked onTopResumedActivityChanged");
+            Logx.i("AntiCheatHook: hooked onTopResumedActivityChanged (exam only)");
         } catch (Throwable t) {
             Logx.w("AntiCheatHook: onTopResumedActivityChanged not available: " + t.getMessage());
         }
@@ -303,6 +358,8 @@ public class AntiCheatHook {
                     "getRunningAppProcesses");
             module.hook(getProcesses).intercept(chain -> {
                 List<?> result = (List<?>) chain.proceed();
+                // 仅在考试页面处于前台时才伪装进程重要性
+                if (!examInForeground) return result;
                 if (result != null && !result.isEmpty()) {
                     for (Object info : result) {
                         if (info instanceof android.app.ActivityManager.RunningAppProcessInfo) {
@@ -318,7 +375,7 @@ public class AntiCheatHook {
                 }
                 return result;
             });
-            Logx.i("AntiCheatHook: hooked getRunningAppProcesses → IMPORTANCE_FOREGROUND");
+            Logx.i("AntiCheatHook: hooked getRunningAppProcesses (exam-guarded)");
         } catch (Throwable t) {
             Logx.w("AntiCheatHook: process importance hook failed: " + t.getMessage());
         }

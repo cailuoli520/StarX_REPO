@@ -4,23 +4,28 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/bg_gradient"
+    android:clipToPadding="false"
     android:fillViewport="true"
     android:overScrollMode="never">
 
     <LinearLayout
+        android:id="@+id/content_container"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
-        android:paddingBottom="24dp">
+        android:paddingBottom="28dp">
 
         <!-- ===== 顶部标题区 (iOS Large Title 风格) ===== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:background="@drawable/hero_panel_bg"
             android:orientation="vertical"
-            android:paddingTop="48dp"
+            android:paddingStart="18dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="18dp"
             android:paddingBottom="20dp">
 
             <LinearLayout
@@ -36,31 +41,46 @@
                     android:letterSpacing="-0.02"
                     android:text="StarX"
                     android:textColor="@color/ios_label"
-                    android:textSize="34sp"
+                    android:textSize="40sp"
                     android:textStyle="bold"
                     tools:ignore="HardcodedText" />
 
                 <TextView
+                    android:id="@+id/version_badge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/card_bg"
-                    android:paddingStart="10dp"
-                    android:paddingTop="4dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="4dp"
-                    android:text="v1.1.3"
+                    android:background="@drawable/glass_chip_bg"
+                    android:paddingStart="12dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="6dp"
+                    android:text="v1.2.0"
                     android:textColor="@color/ios_secondary_label"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     tools:ignore="HardcodedText" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="6dp"
                 android:text="超星学习通增强模块"
                 android:textColor="@color/ios_secondary_label"
-                android:textSize="15sp"
+                android:textSize="14sp"
+                tools:ignore="HardcodedText" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/glass_chip_bg"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="6dp"
+                android:text="Light / Dark 跟随系统 · 轻玻璃界面"
+                android:textColor="@color/ios_secondary_label"
+                android:textSize="11sp"
                 tools:ignore="HardcodedText" />
         </LinearLayout>
 
@@ -155,9 +175,14 @@
 
             <TextView
                 android:id="@+id/license_status"
-                android:layout_width="match_parent"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
+                android:background="@drawable/status_inactive_bg"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="6dp"
                 android:text="未激活"
                 android:textColor="@color/ios_red"
                 android:textSize="14sp"
@@ -875,6 +900,99 @@
                 tools:ignore="HardcodedText" />
         </LinearLayout>
 
+        <!-- ===== 柠檬题库 ===== -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginBottom="6dp"
+            android:text="柠檬题库"
+            android:textAllCaps="true"
+            android:textColor="@color/ios_secondary_label"
+            android:textSize="13sp"
+            tools:ignore="HardcodedText" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:background="@drawable/card_bg"
+            android:elevation="0.5dp"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="默认已启用免费接口，填写 Token 可使用高级搜索"
+                android:textColor="@color/ios_tertiary_label"
+                android:textSize="12sp"
+                tools:ignore="HardcodedText" />
+
+            <EditText
+                android:id="@+id/edit_lemtk_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/ios_input_bg"
+                android:hint="API 地址 (留空使用默认)"
+                android:inputType="textUri"
+                android:padding="12dp"
+                android:textColor="@color/ios_label"
+                android:textColorHint="@color/ios_tertiary_label"
+                android:textSize="14sp"
+                tools:ignore="Autofill,HardcodedText" />
+
+            <EditText
+                android:id="@+id/edit_lemtk_token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/ios_input_bg"
+                android:hint="Token (可选, 高级搜索需要)"
+                android:inputType="textPassword"
+                android:padding="12dp"
+                android:textColor="@color/ios_label"
+                android:textColorHint="@color/ios_tertiary_label"
+                android:textSize="14sp"
+                tools:ignore="Autofill,HardcodedText" />
+
+            <!-- 缓存开关 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="本地题库缓存"
+                    android:textColor="@color/ios_label"
+                    android:textSize="15sp"
+                    tools:ignore="HardcodedText" />
+
+                <Switch
+                    android:id="@+id/switch_cache"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    tools:ignore="UseSwitchCompatOrMaterialSwitch" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_save_lemtk"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/btn_primary_bg"
+                android:text="保存题库配置"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                tools:ignore="HardcodedText" />
+        </LinearLayout>
+
         <!-- ===== 操作 ===== -->
         <TextView
             android:layout_width="wrap_content"
@@ -919,10 +1037,15 @@
 
             <TextView
                 android:id="@+id/scope_status"
-                android:layout_width="match_parent"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
+                android:background="@drawable/glass_chip_bg"
                 android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="6dp"
                 android:textColor="@color/ios_secondary_label"
                 android:textSize="13sp"
                 tools:text="作用域: [com.chaoxing.mobile]" />

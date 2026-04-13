@@ -49,6 +49,34 @@ public class SignInHook {
         }
     }
 
+    private double readFakeLat() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences("sign_config");
+            return Double.longBitsToDouble(prefs.getLong("fake_lat", Double.doubleToLongBits(0.0)));
+        } catch (Throwable t) {
+            return fakeLat;
+        }
+    }
+
+    private double readFakeLng() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences("sign_config");
+            return Double.longBitsToDouble(prefs.getLong("fake_lng", Double.doubleToLongBits(0.0)));
+        } catch (Throwable t) {
+            return fakeLng;
+        }
+    }
+
+    private String readFakeAddr() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences("sign_config");
+            String addr = prefs.getString("fake_addr", "");
+            return addr != null ? addr : "";
+        } catch (Throwable t) {
+            return fakeAddr;
+        }
+    }
+
     private void hookBDLocation() throws Throwable {
         Class<?> bdLocationClass;
         try {
@@ -62,8 +90,9 @@ public class SignInHook {
         try {
             Method getLatitude = bdLocationClass.getDeclaredMethod("getLatitude");
             module.hook(getLatitude).intercept(chain -> {
-                if (fakeLat == 0.0) return chain.proceed();
-                return fakeLat;
+                double lat = readFakeLat();
+                if (lat == 0.0) return chain.proceed();
+                return lat;
             });
             Logx.i("SignInHook: hooked BDLocation.getLatitude()");
         } catch (NoSuchMethodException e) {
@@ -74,8 +103,9 @@ public class SignInHook {
         try {
             Method getLongitude = bdLocationClass.getDeclaredMethod("getLongitude");
             module.hook(getLongitude).intercept(chain -> {
-                if (fakeLng == 0.0) return chain.proceed();
-                return fakeLng;
+                double lng = readFakeLng();
+                if (lng == 0.0) return chain.proceed();
+                return lng;
             });
             Logx.i("SignInHook: hooked BDLocation.getLongitude()");
         } catch (NoSuchMethodException e) {
@@ -86,8 +116,9 @@ public class SignInHook {
         try {
             Method getAddrStr = bdLocationClass.getDeclaredMethod("getAddrStr");
             module.hook(getAddrStr).intercept(chain -> {
-                if (fakeAddr.isEmpty()) return chain.proceed();
-                return fakeAddr;
+                String addr = readFakeAddr();
+                if (addr.isEmpty()) return chain.proceed();
+                return addr;
             });
             Logx.i("SignInHook: hooked BDLocation.getAddrStr()");
         } catch (NoSuchMethodException e) {
@@ -98,7 +129,7 @@ public class SignInHook {
         try {
             Method getLocType = bdLocationClass.getDeclaredMethod("getLocType");
             module.hook(getLocType).intercept(chain -> {
-                if (fakeLat == 0.0) return chain.proceed();
+                if (readFakeLat() == 0.0) return chain.proceed();
                 return 161;
             });
             Logx.i("SignInHook: hooked BDLocation.getLocType()");
@@ -165,21 +196,22 @@ public class SignInHook {
      * 绕过百度 SDK, 必须在 framework 层拦截
      */
     private void hookLocationManagerBackup() {
-        if (fakeLat == 0.0 || fakeLng == 0.0) return;
-
         try {
             Method getLastKnown = LocationManager.class.getDeclaredMethod(
                     "getLastKnownLocation", String.class);
             module.hook(getLastKnown).intercept(chain -> {
+                double lat = readFakeLat();
+                double lng = readFakeLng();
+                if (lat == 0.0 || lng == 0.0) return chain.proceed();
                 Location fakeLocation = new Location("gps");
-                fakeLocation.setLatitude(fakeLat);
-                fakeLocation.setLongitude(fakeLng);
+                fakeLocation.setLatitude(lat);
+                fakeLocation.setLongitude(lng);
                 fakeLocation.setAccuracy(30.0f);
                 fakeLocation.setTime(System.currentTimeMillis());
                 // 需要设置 elapsedRealtimeNanos 以通过验证
                 fakeLocation.setElapsedRealtimeNanos(android.os.SystemClock.elapsedRealtimeNanos());
                 Logx.i("SignInHook: faked LocationManager.getLastKnownLocation → ("
-                        + fakeLat + "," + fakeLng + ")");
+                        + lat + "," + lng + ")");
                 return fakeLocation;
             });
             Logx.i("SignInHook: hooked LocationManager.getLastKnownLocation");

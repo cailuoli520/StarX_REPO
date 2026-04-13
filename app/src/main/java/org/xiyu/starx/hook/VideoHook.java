@@ -149,12 +149,60 @@ public class VideoHook {
     }
 
     private void addExtraSpeeds(List<Object> list, Constructor<?> ctor) {
+        Set<Float> existing = collectExistingSpeeds(list);
         float[] extras = {3.0f, 5.0f, 8.0f, 16.0f};
         for (float speed : extras) {
+            if (existing.contains(speed)) continue;
             try {
                 list.add(ctor.newInstance(speed + "x", speed));
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /**
+     * 双策略提取已有倍速集合:
+     * 1) 解析 String 标签（兼容 "1.5x" / "1.5X" / "2倍" / "2.0倍速"）
+     * 2) 若标签解析无结果，回退到收集所有 float 字段值
+     */
+    private static Set<Float> collectExistingSpeeds(List<Object> list) {
+        Set<Float> speeds = new HashSet<>();
+        for (Object item : list) {
+            try {
+                boolean parsedFromLabel = false;
+                for (Field f : item.getClass().getDeclaredFields()) {
+                    if (f.getType() != String.class) continue;
+                    f.setAccessible(true);
+                    String label = (String) f.get(item);
+                    Float parsed = parseSpeedLabel(label);
+                    if (parsed != null) {
+                        speeds.add(parsed);
+                        parsedFromLabel = true;
+                    }
+                }
+                if (!parsedFromLabel) {
+                    for (Field f : item.getClass().getDeclaredFields()) {
+                        if (f.getType() != float.class) continue;
+                        f.setAccessible(true);
+                        speeds.add(f.getFloat(item));
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        return speeds;
+    }
+
+    private static Float parseSpeedLabel(String label) {
+        if (label == null || label.isEmpty()) return null;
+        String s = label.trim();
+        if (s.endsWith("倍速")) s = s.substring(0, s.length() - 2);
+        else if (s.endsWith("倍")) s = s.substring(0, s.length() - 1);
+        else if (s.endsWith("x") || s.endsWith("X")) s = s.substring(0, s.length() - 1);
+        try {
+            float val = Float.parseFloat(s);
+            return (val > 0 && val <= 100) ? val : null;
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 
@@ -286,7 +334,7 @@ public class VideoHook {
                             fireBatchComplete(courseVideo, courseVideoClass, () -> {
                                 new Handler(Looper.getMainLooper()).post(() ->
                                         postCompletionEvent(null));
-                            });
+                            }, videoKey);
                             Logx.i("VideoHook: batch complete initiated for " + videoKey);
                         }
                     } catch (Throwable t) {
@@ -539,7 +587,7 @@ public class VideoHook {
                     // ★ 通过 EventBus 通知章节页面更新任务点状态
                     postCompletionEvent(fVideoJson);
                 });
-            });
+            }, videoKey);
         } catch (Throwable t) {
             Logx.w("VideoHook: complete click failed: " + t.getMessage());
             Toast.makeText(ctx, "操作失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
@@ -641,16 +689,17 @@ public class VideoHook {
     //  批量进度上报 — 模拟完整观看过程
     // ──────────────────────────────────────────────────────────────
 
-    private void fireBatchComplete(Object courseVideo, Class<?> cvClass) {
-        fireBatchComplete(courseVideo, cvClass, null);
+    private void fireBatchComplete(Object courseVideo, Class<?> cvClass, String videoKey) {
+        fireBatchComplete(courseVideo, cvClass, null, videoKey);
     }
 
     private void fireBatchComplete(Object courseVideo, Class<?> cvClass,
-                                   Runnable onSuccess) {
+                                   Runnable onSuccess, String videoKey) {
         new Thread(() -> {
             try {
                 String reportUrl = str(cvClass, courseVideo, "getReportUrl");
                 if (reportUrl == null || reportUrl.isEmpty()) {
+                    if (videoKey != null) completedVideos.remove(videoKey);
                     Logx.w("VideoHook: reportUrl is empty, skip batch");
                     return;
                 }
@@ -695,6 +744,7 @@ public class VideoHook {
                 Logx.i("VideoHook: batch complete sent (d=" + durationSec + "s)");
                 if (onSuccess != null) onSuccess.run();
             } catch (Throwable t) {
+                if (videoKey != null) completedVideos.remove(videoKey);
                 Logx.w("VideoHook: batch complete failed: " + t.getMessage());
             }
         }, "StarX-BatchComplete").start();

@@ -7,6 +7,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
 import org.xiyu.starx.answer.AnswerProvider;
+import org.xiyu.starx.answer.LemTkApi;
 import org.xiyu.starx.answer.TikuApi;
 import org.xiyu.starx.hook.AdsHook;
 import org.xiyu.starx.hook.AntiCheatHook;
@@ -19,6 +20,7 @@ import org.xiyu.starx.license.HookConfig;
 import org.xiyu.starx.license.LicenseManager;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.QuestionCache;
 
 import io.github.libxposed.api.XposedModule;
 
@@ -87,61 +89,129 @@ public class MainModule extends XposedModule {
         TikuApi.init(config.tikuEndpoints);
         Logx.i("StarX: license OK, config v" + config.version);
 
-        // === 最高优先级: 反检测绕过 (必须在其他 Hook 之前) ===
+        // === 初始化柠檬题库 ===
         try {
-            new DetectionBypassHook(this, cl).hook();
+            var prefs = getRemotePreferences("config");
+            String lemtkUrl = prefs.getString("lemtk_url", "");
+            String lemtkToken = prefs.getString("lemtk_token", "");
+            LemTkApi.init(lemtkUrl, lemtkToken);
+            Logx.i("LemTkApi initialized");
         } catch (Throwable t) {
-            Logx.e("DetectionBypassHook failed", t);
+            Logx.w("LemTkApi init failed: " + t.getMessage());
+        }
+
+        // === 初始化题库缓存 ===
+        try {
+            Class<?> atClass = Class.forName("android.app.ActivityThread");
+            Object app = atClass.getMethod("currentApplication").invoke(null);
+            if (app != null) {
+                QuestionCache.init((android.app.Application) app);
+                Logx.i("QuestionCache initialized");
+            }
+        } catch (Throwable t) {
+            Logx.w("QuestionCache init failed: " + t.getMessage());
+        }
+
+        // === 读取功能开关 ===
+        boolean detectionOn = true, adsOn = true, signinOn = true,
+                anticheatOn = true, windowOn = true, videoOn = true, examOn = true;
+        try {
+            var switchPrefs = getRemotePreferences("config");
+            detectionOn = switchPrefs.getBoolean("hook_detection_enabled", true);
+            adsOn = switchPrefs.getBoolean("hook_ads_enabled", true);
+            signinOn = switchPrefs.getBoolean("hook_signin_enabled", true);
+            anticheatOn = switchPrefs.getBoolean("hook_anticheat_enabled", true);
+            windowOn = switchPrefs.getBoolean("hook_window_enabled", true);
+            videoOn = switchPrefs.getBoolean("hook_video_enabled", true);
+            examOn = switchPrefs.getBoolean("hook_exam_enabled", true);
+        } catch (Throwable t) {
+            Logx.w("Failed to read hook switches, all enabled by default");
+        }
+
+        // === 最高优先级: 反检测绕过 (必须在其他 Hook 之前) ===
+        if (detectionOn) {
+            try {
+                new DetectionBypassHook(this, cl).hook();
+            } catch (Throwable t) {
+                Logx.e("DetectionBypassHook failed", t);
+            }
+        } else {
+            Logx.i("DetectionBypassHook: disabled by user");
         }
 
         // === 功能 Hook ===
-        try {
-            new AdsHook(this, cl).hook();
-        } catch (Throwable t) {
-            Logx.e("AdsHook failed", t);
-        }
-
-        try {
-            new SignInHook(this, cl).hook();
-        } catch (Throwable t) {
-            Logx.e("SignInHook failed", t);
-        }
-
-        try {
-            new AntiCheatHook(this, cl).hook();
-        } catch (Throwable t) {
-            Logx.e("AntiCheatHook failed", t);
-        }
-
-        try {
-            new WindowHook(this, cl).hook();
-        } catch (Throwable t) {
-            Logx.e("WindowHook failed", t);
-        }
-
-        try {
-            AnswerProvider answerProvider = new AnswerProvider();
+        if (adsOn) {
             try {
-                var prefs = getRemotePreferences("config");
-                String openaiKey = prefs.getString("ai_openai_key", "");
-                String openaiUrl = prefs.getString("ai_openai_url", "");
-                String openaiModel = prefs.getString("ai_openai_model", "");
-                String geminiKey = prefs.getString("ai_gemini_key", "");
-                String geminiModel = prefs.getString("ai_gemini_model", "");
-                answerProvider.setOpenAI(openaiKey, openaiUrl, openaiModel);
-                answerProvider.setGemini(geminiKey, geminiModel);
+                new AdsHook(this, cl).hook();
             } catch (Throwable t) {
-                Logx.w("AI config load failed: " + t.getMessage());
+                Logx.e("AdsHook failed", t);
             }
-            new ExamHook(this, cl, answerProvider, config.jsInject).hook();
-        } catch (Throwable t) {
-            Logx.e("ExamHook failed", t);
+        } else {
+            Logx.i("AdsHook: disabled by user");
         }
 
-        try {
-            new VideoHook(this, cl).hook();
-        } catch (Throwable t) {
-            Logx.e("VideoHook failed", t);
+        if (signinOn) {
+            try {
+                new SignInHook(this, cl).hook();
+            } catch (Throwable t) {
+                Logx.e("SignInHook failed", t);
+            }
+        } else {
+            Logx.i("SignInHook: disabled by user");
+        }
+
+        if (anticheatOn) {
+            try {
+                new AntiCheatHook(this, cl).hook();
+            } catch (Throwable t) {
+                Logx.e("AntiCheatHook failed", t);
+            }
+        } else {
+            Logx.i("AntiCheatHook: disabled by user");
+        }
+
+        if (windowOn) {
+            try {
+                new WindowHook(this, cl).hook();
+            } catch (Throwable t) {
+                Logx.e("WindowHook failed", t);
+            }
+        } else {
+            Logx.i("WindowHook: disabled by user");
+        }
+
+        if (examOn) {
+            try {
+                AnswerProvider answerProvider = new AnswerProvider();
+                try {
+                    var prefs = getRemotePreferences("config");
+                    String openaiKey = prefs.getString("ai_openai_key", "");
+                    String openaiUrl = prefs.getString("ai_openai_url", "");
+                    String openaiModel = prefs.getString("ai_openai_model", "");
+                    String geminiKey = prefs.getString("ai_gemini_key", "");
+                    String geminiModel = prefs.getString("ai_gemini_model", "");
+                    answerProvider.setOpenAI(openaiKey, openaiUrl, openaiModel);
+                    answerProvider.setGemini(geminiKey, geminiModel);
+                    answerProvider.setCacheEnabled(prefs.getBoolean("cache_enabled", true));
+                } catch (Throwable t) {
+                    Logx.w("AI config load failed: " + t.getMessage());
+                }
+                new ExamHook(this, cl, answerProvider, config.jsInject).hook();
+            } catch (Throwable t) {
+                Logx.e("ExamHook failed", t);
+            }
+        } else {
+            Logx.i("ExamHook: disabled by user");
+        }
+
+        if (videoOn) {
+            try {
+                new VideoHook(this, cl).hook();
+            } catch (Throwable t) {
+                Logx.e("VideoHook failed", t);
+            }
+        } else {
+            Logx.i("VideoHook: disabled by user");
         }
 
         Logx.i("All hooks initialized");

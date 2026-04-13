@@ -11,12 +11,18 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.location.Geocoder
 import android.location.LocationManager
+import android.os.Build
 import android.os.Bundle
 import android.preference.PreferenceManager
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import org.osmdroid.config.Configuration
@@ -64,6 +70,7 @@ class MapPickerActivity : Activity() {
         Configuration.getInstance().userAgentValue = packageName
 
         setContentView(R.layout.activity_map_picker)
+        applySystemBars()
 
         mapView = findViewById(R.id.map_view)
         tvCoordInfo = findViewById(R.id.tv_coord_info)
@@ -160,6 +167,65 @@ class MapPickerActivity : Activity() {
             } else false
         }
     }
+
+    private fun applySystemBars() {
+        val isNight = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+        window.apply {
+            addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+            statusBarColor = Color.TRANSPARENT
+            navigationBarColor = Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= 30) {
+                setDecorFitsSystemWindows(false)
+                val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                val appearance = if (isNight) 0 else mask
+                insetsController?.setSystemBarsAppearance(appearance, mask)
+            } else {
+                @Suppress("DEPRECATION")
+                var flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                @Suppress("DEPRECATION")
+                if (!isNight) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                @Suppress("DEPRECATION")
+                decorView.systemUiVisibility = flags
+            }
+        }
+
+        val root = findViewById<View>(R.id.map_root)
+        val topPanel = findViewById<LinearLayout>(R.id.panel_top)
+        val bottomPanel = findViewById<LinearLayout>(R.id.panel_bottom)
+        val searchBar = findViewById<LinearLayout>(R.id.search_bar_container)
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val topInset: Int
+            val bottomInset: Int
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                topInset = bars.top
+                bottomInset = bars.bottom
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    topInset = insets.systemWindowInsetTop
+                    bottomInset = insets.systemWindowInsetBottom
+                }
+            }
+            updateMargins(topPanel, top = dp(16) + topInset)
+            updateMargins(searchBar, top = dp(110) + topInset)
+            updateMargins(bottomPanel, bottom = dp(16) + bottomInset)
+            insets
+        }
+        root.requestApplyInsets()
+    }
+
+    private fun updateMargins(view: View, top: Int? = null, bottom: Int? = null) {
+        val lp = view.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (top != null) lp.topMargin = top
+        if (bottom != null) lp.bottomMargin = bottom
+        view.layoutParams = lp
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     @SuppressLint("MissingPermission")
     private fun enableMyLocation() {

@@ -15,7 +15,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:description="@android:string/unknownName"
         android:label="StarX"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:theme="@style/Theme.StarX">
         <activity
             android:name=".MainActivity"
             android:exported="true">

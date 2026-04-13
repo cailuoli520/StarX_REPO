@@ -3,9 +3,13 @@ package org.xiyu.starx
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Toast
 import io.github.libxposed.service.XposedService
@@ -23,6 +27,7 @@ import java.util.Locale
 class MainActivity : Activity(), App.ServiceStateListener {
     private var mService: XposedService? = null
     private lateinit var binding: ActivityMainBinding
+    private var switchesLoading = false
 
     companion object {
         private const val PREFS_CONFIG = "config"
@@ -66,27 +71,57 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 沉浸式状态栏 — 必须在 setContentView 之后（DecorView 才存在）
-        window.apply {
-            addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-            statusBarColor = android.graphics.Color.TRANSPARENT
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                @Suppress("DEPRECATION")
-                setDecorFitsSystemWindows(false)
-                insetsController?.setSystemBarsAppearance(
-                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-                    android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                        or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR)
-            }
-        }
+        applySystemBars()
 
         setupSwitchListeners()
         setupButtons()
+
+        // 动态设置版本号
+        binding.versionBadge.text = "v${BuildConfig.VERSION_NAME}"
+    }
+
+    private fun applySystemBars() {
+        val isNight = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+        window.apply {
+            addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+            statusBarColor = Color.TRANSPARENT
+            navigationBarColor = Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= 30) {
+                setDecorFitsSystemWindows(false)
+                val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                val appearance = if (isNight) 0 else mask
+                insetsController?.setSystemBarsAppearance(appearance, mask)
+            } else {
+                @Suppress("DEPRECATION")
+                var flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                @Suppress("DEPRECATION")
+                if (!isNight) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                @Suppress("DEPRECATION")
+                decorView.systemUiVisibility = flags
+            }
+        }
+
+        val horizontal = (20 * resources.displayMetrics.density).toInt()
+        val bottomBase = (28 * resources.displayMetrics.density).toInt()
+        binding.root.setOnApplyWindowInsetsListener { _, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                binding.contentContainer.setPadding(horizontal, bars.top, horizontal, bottomBase + bars.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                binding.contentContainer.setPadding(
+                    horizontal,
+                    insets.systemWindowInsetTop,
+                    horizontal,
+                    bottomBase + insets.systemWindowInsetBottom
+                )
+            }
+            insets
+        }
+        binding.root.requestApplyInsets()
     }
 
     override fun onStart() {
@@ -105,13 +140,13 @@ class MainActivity : Activity(), App.ServiceStateListener {
             if (service == null) {
                 binding.statusBadge.text = "未连接"
                 binding.statusBadge.setBackgroundResource(R.drawable.status_inactive_bg)
-                binding.statusBadge.setTextColor(0xFFFF3B30.toInt())
+                binding.statusBadge.setTextColor(getColor(R.color.ios_red))
                 binding.frameworkInfo.text = "等待框架连接..."
                 binding.frameworkDetail.visibility = View.GONE
             } else {
                 binding.statusBadge.text = "已激活"
                 binding.statusBadge.setBackgroundResource(R.drawable.status_active_bg)
-                binding.statusBadge.setTextColor(0xFF34C759.toInt())
+                binding.statusBadge.setTextColor(getColor(R.color.ios_green))
                 binding.frameworkInfo.text = "${service.frameworkName} 已连接"
 
                 binding.frameworkDetail.visibility = View.VISIBLE
@@ -121,6 +156,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 loadSwitchStates(service)
                 loadLocationConfig(service)
                 loadAiConfig(service)
+                loadLemtkConfig(service)
                 updateLicenseStatus(service)
                 checkForUpdates()
                 checkAnnouncement()
@@ -142,10 +178,12 @@ class MainActivity : Activity(), App.ServiceStateListener {
 
         for ((switch, key) in switchMap) {
             switch.setOnCheckedChangeListener { _, isChecked ->
+                if (switchesLoading) return@setOnCheckedChangeListener
                 val service = mService ?: return@setOnCheckedChangeListener
                 try {
                     val prefs = service.getRemotePreferences(PREFS_CONFIG)
                     prefs.edit().putBoolean(key, isChecked).apply()
+                    Toast.makeText(this, "已保存，重启学习通后生效", Toast.LENGTH_SHORT).show()
                 } catch (e: Throwable) {
                     Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
@@ -175,6 +213,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
 
         binding.btnSaveAi.setOnClickListener {
             saveAiConfig()
+        }
+
+        binding.btnSaveLemtk.setOnClickListener {
+            saveLemtkConfig()
         }
 
         binding.btnRequestScope.setOnClickListener {
@@ -226,6 +268,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
 
     private fun loadSwitchStates(service: XposedService) {
         try {
+            switchesLoading = true
             val prefs = service.getRemotePreferences(PREFS_CONFIG)
             binding.switchDetection.isChecked = prefs.getBoolean(KEY_DETECTION, true)
             binding.switchAds.isChecked = prefs.getBoolean(KEY_ADS, true)
@@ -236,6 +279,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchVideoTime.isChecked = prefs.getBoolean(KEY_VIDEO_TIME, false)
             binding.switchExam.isChecked = prefs.getBoolean(KEY_EXAM, true)
         } catch (_: Throwable) {
+        } finally {
+            switchesLoading = false
         }
     }
 
@@ -325,6 +370,35 @@ class MainActivity : Activity(), App.ServiceStateListener {
         }
     }
 
+    private fun loadLemtkConfig(service: XposedService) {
+        try {
+            val prefs = service.getRemotePreferences(PREFS_CONFIG)
+            binding.editLemtkUrl.setText(prefs.getString("lemtk_url", "") ?: "")
+            binding.editLemtkToken.setText(prefs.getString("lemtk_token", "") ?: "")
+            binding.switchCache.isChecked = prefs.getBoolean("cache_enabled", true)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun saveLemtkConfig() {
+        val service = mService
+        if (service == null) {
+            Toast.makeText(this, "框架未连接，无法保存", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val prefs = service.getRemotePreferences(PREFS_CONFIG)
+            prefs.edit()
+                .putString("lemtk_url", binding.editLemtkUrl.text.toString().trim())
+                .putString("lemtk_token", binding.editLemtkToken.text.toString().trim())
+                .putBoolean("cache_enabled", binding.switchCache.isChecked)
+                .apply()
+            Toast.makeText(this, "题库配置已保存，重启学习通生效", Toast.LENGTH_SHORT).show()
+        } catch (e: Throwable) {
+            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun openTelegramGroup() {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TG_GROUP_URL)))
@@ -343,18 +417,22 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 if (now < expires) {
                     val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
                     binding.licenseStatus.text = "已激活 · 到期: ${sdf.format(Date(expires))}"
-                    binding.licenseStatus.setTextColor(0xFF34C759.toInt())
+                    binding.licenseStatus.setBackgroundResource(R.drawable.status_active_bg)
+                    binding.licenseStatus.setTextColor(getColor(R.color.ios_green))
                 } else {
                     binding.licenseStatus.text = "许可已过期"
-                    binding.licenseStatus.setTextColor(0xFFFF3B30.toInt())
+                    binding.licenseStatus.setBackgroundResource(R.drawable.status_inactive_bg)
+                    binding.licenseStatus.setTextColor(getColor(R.color.ios_red))
                 }
             } else {
                 binding.licenseStatus.text = "未激活"
-                binding.licenseStatus.setTextColor(0xFFFF3B30.toInt())
+                binding.licenseStatus.setBackgroundResource(R.drawable.status_inactive_bg)
+                binding.licenseStatus.setTextColor(getColor(R.color.ios_red))
             }
         } catch (_: Throwable) {
             binding.licenseStatus.text = "未激活"
-            binding.licenseStatus.setTextColor(0xFFFF3B30.toInt())
+            binding.licenseStatus.setBackgroundResource(R.drawable.status_inactive_bg)
+            binding.licenseStatus.setTextColor(getColor(R.color.ios_red))
         }
     }
 

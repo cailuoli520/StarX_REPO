@@ -1,5 +1,6 @@
 package org.xiyu.starx.answer;
 
+import org.xiyu.starx.util.ActiveConnection;
 import org.xiyu.starx.util.Logx;
 
 import java.io.BufferedReader;
@@ -31,6 +32,9 @@ public class AiApi {
                     + "- 填空题直接给出填空内容，多空用 | 分隔\n"
                     + "- 简答题简洁回答要点\n"
                     + "- 不要输出任何多余内容，只输出答案";
+
+    private static final String OCR_PROMPT =
+            "提取这张图片中所有可见的文字内容，包括题目、选项、公式等。只输出提取到的文字，不要任何解释或格式标记。";
 
     private Provider provider;
     private String apiKey;
@@ -74,6 +78,7 @@ public class AiApi {
     public String ask(String question) {
         if (!isConfigured()) return null;
         if (question == null || question.trim().isEmpty()) return null;
+        if (Thread.currentThread().isInterrupted()) return null;
 
         String cleaned = question.replaceAll("<[^>]*>", "").replaceAll("\\s+", " ").trim();
         try {
@@ -85,6 +90,32 @@ public class AiApi {
             return answer;
         } catch (Throwable t) {
             Logx.w("AiApi[" + provider + "]: failed: " + t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 使用 AI 识别图片中的文字（OCR）
+     *
+     * @param base64   图片的 Base64 编码
+     * @param mimeType 图片 MIME 类型（如 image/jpeg）
+     * @return 识别出的文字，失败返回 null
+     */
+    public String ocrImage(String base64, String mimeType) {
+        if (!isConfigured()) return null;
+        if (base64 == null || base64.isEmpty()) return null;
+        if (Thread.currentThread().isInterrupted()) return null;
+        try {
+            String result = (provider == Provider.GEMINI)
+                    ? askGeminiWithImage(OCR_PROMPT, base64, mimeType)
+                    : askOpenAIWithImage(OCR_PROMPT, base64, mimeType);
+            if (result != null) {
+                result = result.trim();
+                Logx.i("AiApi[" + provider + "] OCR => " + result);
+            }
+            return result;
+        } catch (Throwable t) {
+            Logx.w("AiApi[" + provider + "] OCR failed: " + t.getMessage());
             return null;
         }
     }
@@ -106,6 +137,27 @@ public class AiApi {
             url += "chat/completions";
         }
 
+        String resp = post(url, json, "Bearer " + apiKey);
+        return extractOpenAIAnswer(resp);
+    }
+
+    private String askOpenAIWithImage(String prompt, String base64, String mimeType) throws Exception {
+        String dataUri = "data:" + mimeType + ";base64," + base64;
+        String json = "{\"model\":\"" + escapeJson(model) + "\","
+                + "\"messages\":[{"
+                + "\"role\":\"user\","
+                + "\"content\":["
+                + "{\"type\":\"text\",\"text\":\"" + escapeJson(prompt) + "\"},"
+                + "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + escapeJson(dataUri) + "\"}}"
+                + "]}"
+                + "],\"max_tokens\":1024,\"temperature\":0.1}";
+
+        String url = baseUrl;
+        if (!url.endsWith("/chat/completions")) {
+            if (!url.endsWith("/")) url += "/";
+            if (!url.endsWith("v1/")) url += "v1/";
+            url += "chat/completions";
+        }
         String resp = post(url, json, "Bearer " + apiKey);
         return extractOpenAIAnswer(resp);
     }
@@ -148,6 +200,18 @@ public class AiApi {
         return extractGeminiAnswer(resp);
     }
 
+    private String askGeminiWithImage(String prompt, String base64, String mimeType) throws Exception {
+        String json = "{\"contents\":[{\"parts\":["
+                + "{\"text\":\"" + escapeJson(prompt) + "\"},"
+                + "{\"inlineData\":{\"mimeType\":\"" + escapeJson(mimeType) + "\",\"data\":\"" + base64 + "\"}}"
+                + "]}],\"generationConfig\":{\"maxOutputTokens\":1024,\"temperature\":0.1}}";
+
+        String url = "https://generativelanguage.googleapis.com/v1beta/models/"
+                + model + ":generateContent?key=" + apiKey;
+        String resp = post(url, json, null);
+        return extractGeminiAnswer(resp);
+    }
+
     private String extractGeminiAnswer(String json) {
         // 提取 candidates[0].content.parts[0].text
         int textIdx = json.indexOf("\"text\"");
@@ -175,6 +239,7 @@ public class AiApi {
     private String post(String urlStr, String body, String auth) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        ActiveConnection.set(conn);
         try {
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(TIMEOUT_MS);
@@ -204,6 +269,7 @@ public class AiApi {
             }
             return sb.toString();
         } finally {
+            ActiveConnection.clear();
             conn.disconnect();
         }
     }
