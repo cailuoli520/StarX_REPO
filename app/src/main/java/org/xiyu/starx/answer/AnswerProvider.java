@@ -88,34 +88,23 @@ public class AnswerProvider {
             }
         }
 
-        // 1. 柠檬题库优先
+        // 1. 多题库查询（用户配置 + 服务端下发）
         try {
-            String lemtkAnswer = LemTkApi.query(question, type >= 0 ? String.valueOf(type) : null, options);
-            if (lemtkAnswer != null) {
-                writeCache(question, lemtkAnswer, "柠檬题库", options);
-                return new Result(lemtkAnswer, "柠檬题库");
-            }
-        } catch (Throwable t) {
-            Logx.w("AnswerProvider: lemtk error: " + t.getMessage());
-        }
-        if (Thread.currentThread().isInterrupted()) return null;
-
-        // 2. 题库 API
-        try {
-            String tikuAnswer = TikuApi.query(question);
+            String tikuAnswer = TikuApi.query(question, type, options);
             if (tikuAnswer != null) {
                 writeCache(question, tikuAnswer, "题库", options);
                 return new Result(tikuAnswer, "题库");
             }
+            Logx.i("AnswerProvider: tiku miss, fallback to AI");
         } catch (Throwable t) {
             Logx.w("AnswerProvider: tiku error: " + t.getMessage());
         }
         if (Thread.currentThread().isInterrupted()) return null;
 
-        // 3. OpenAI 兼容（AI 答案不写入缓存，防止缓存污染）
+        // 2. OpenAI 兼容（AI 答案不写入缓存，防止缓存污染）
         if (openaiApi != null && openaiApi.isConfigured()) {
             try {
-                String aiAnswer = openaiApi.ask(question);
+                String aiAnswer = openaiApi.ask(question, type, options);
                 if (aiAnswer != null) {
                     return new Result(aiAnswer, "AI-OpenAI");
                 }
@@ -125,10 +114,10 @@ public class AnswerProvider {
         }
         if (Thread.currentThread().isInterrupted()) return null;
 
-        // 4. Gemini（AI 答案不写入缓存，防止缓存污染）
+        // 3. Gemini（AI 答案不写入缓存，防止缓存污染）
         if (geminiApi != null && geminiApi.isConfigured()) {
             try {
-                String geminiAnswer = geminiApi.ask(question);
+                String geminiAnswer = geminiApi.ask(question, type, options);
                 if (geminiAnswer != null) {
                     return new Result(geminiAnswer, "AI-Gemini");
                 }

@@ -3,8 +3,11 @@
     <color name="ios_bg_start">#FF0D1118</color>
     <color name="ios_bg_center">#FF111722</color>
     <color name="ios_bg_end">#FF0A0E15</color>
+    <color name="ios_bg_glow">#FF151C28</color>
 
     <color name="ios_blue">#FF0A84FF</color>
+    <color name="ios_blue_deep">#FF195EDC</color>
+    <color name="ios_blue_light">#FF45A0FF</color>
     <color name="ios_blue_ripple">#400A84FF</color>
     <color name="ios_green">#FF30D158</color>
     <color name="ios_red">#FFFF453A</color>
@@ -15,17 +18,23 @@
 
     <color name="ios_separator">#22FFFFFF</color>
     <color name="ios_card">#22161D26</color>
-    <color name="ios_card_top">#38273142</color>
-    <color name="ios_card_bottom">#221A2230</color>
-    <color name="ios_card_stroke">#2EFFFFFF</color>
+    <color name="ios_card_top">#FF222B38</color>
+    <color name="ios_card_bottom">#FF171E29</color>
+    <color name="ios_card_glow">#FF293444</color>
+    <color name="ios_card_stroke">#33FFFFFF</color>
 
-    <color name="ios_panel_top">#4A243042</color>
-    <color name="ios_panel_bottom">#3019222F</color>
+    <color name="ios_panel_top">#FF2A3444</color>
+    <color name="ios_panel_glow">#FF313D4F</color>
+    <color name="ios_panel_bottom">#FF1B2431</color>
     <color name="ios_panel_stroke">#33FFFFFF</color>
 
-    <color name="ios_chip_top">#3D2D3647</color>
-    <color name="ios_chip_bottom">#26212A38</color>
+    <color name="ios_chip_top">#FF30394A</color>
+    <color name="ios_chip_glow">#FF364154</color>
+    <color name="ios_chip_bottom">#FF232C39</color>
     <color name="ios_chip_stroke">#36FFFFFF</color>
+
+    <color name="ios_nav_active_top">#FF2D527F</color>
+    <color name="ios_nav_active_bottom">#FF1E3658</color>
 
     <color name="ios_input_bg">#1F161D28</color>
     <color name="ios_input_top">#3026323F</color>

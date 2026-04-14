@@ -2,6 +2,7 @@ package org.xiyu.starx.answer;
 
 import org.xiyu.starx.util.ActiveConnection;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.QuestionCache;
 import org.xiyu.starx.util.RateLimiter;
 
 import java.io.BufferedReader;
@@ -107,8 +108,15 @@ public class LemTkApi {
      * @return 答案文本，未命中返回 null
      */
     public static String query(String question, String type, String options) {
+        return queryWithConfig(baseUrl, token, question, type, options);
+    }
+
+    public static String queryWithConfig(String url, String tk, String question, String type, String options) {
         if (!enabled) return null;
         if (question == null || question.trim().isEmpty()) return null;
+
+        String requestBaseUrl = normalizeBaseUrl(url);
+        String requestToken = normalizeToken(tk);
 
         // 清洗题目
         String cleaned = question.replaceAll("<[^>]*>", "").replaceAll("\\s+", " ").trim();
@@ -122,10 +130,10 @@ public class LemTkApi {
         if (Thread.currentThread().isInterrupted()) return null;
 
         // 有 Token 时优先使用高级搜索
-        if (token != null) {
+        if (requestToken != null) {
             if (Thread.currentThread().isInterrupted()) return null;
             try {
-                String answer = queryApi("/api/v1/mcx", cleaned, type, options, true);
+                String answer = queryApi(requestBaseUrl, requestToken, "/api/v1/mcx", cleaned, type, options, true);
                 if (answer != null) {
                     Logx.i("LemTkApi: 命中[高级] => " + answer);
                     return answer;
@@ -138,7 +146,7 @@ public class LemTkApi {
         // 免费查询
         if (Thread.currentThread().isInterrupted()) return null;
         try {
-            String answer = queryApi("/api/v1/cx", cleaned, type, options, token != null);
+            String answer = queryApi(requestBaseUrl, requestToken, "/api/v1/cx", cleaned, type, options, requestToken != null);
             if (answer != null) {
                 Logx.i("LemTkApi: 命中[普通] => " + answer);
                 return answer;
@@ -150,10 +158,21 @@ public class LemTkApi {
         return null;
     }
 
-    private static String queryApi(String path, String question, String type,
+    private static String normalizeBaseUrl(String url) {
+        String normalized = (url == null || url.trim().isEmpty()) ? DEFAULT_BASE_URL : url.trim();
+        if (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        return normalized;
+    }
+
+    private static String normalizeToken(String tk) {
+        if (tk == null || tk.trim().isEmpty()) return null;
+        return tk.trim();
+    }
+
+    private static String queryApi(String requestBaseUrl, String requestToken, String path, String question, String type,
                                    String options, boolean useToken) throws Exception {
         // 构建 GET URL
-        StringBuilder urlBuilder = new StringBuilder(baseUrl).append(path);
+        StringBuilder urlBuilder = new StringBuilder(requestBaseUrl).append(path);
         urlBuilder.append("?question=").append(URLEncoder.encode(question, "UTF-8"));
         if (type != null && !type.isEmpty()) {
             String mapped = mapQuestionType(type);
@@ -174,8 +193,8 @@ public class LemTkApi {
             conn.setReadTimeout(TIMEOUT_MS);
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("User-Agent", "StarX/1.2");
-            if (useToken && token != null) {
-                conn.setRequestProperty("Authorization", "Bearer " + token);
+            if (useToken && requestToken != null) {
+                conn.setRequestProperty("Authorization", "Bearer " + requestToken);
             }
 
             int code = conn.getResponseCode();
@@ -240,7 +259,7 @@ public class LemTkApi {
             }
             if (quoteEnd >= body.length()) return null;
             String answer = unescapeJson(body.substring(quoteStart + 1, quoteEnd)).trim();
-            return answer.isEmpty() ? null : answer;
+            return answer.isEmpty() || QuestionCache.isInvalidAnswerText(answer) ? null : answer;
         } catch (Throwable t) {
             Logx.w("LemTkApi: parse error: " + t.getMessage());
             return null;

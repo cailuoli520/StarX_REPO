@@ -86,8 +86,15 @@ public class QuestionCache {
                     "hash = ?", new String[]{hash},
                     null, null, null);
             if (cursor != null && cursor.moveToFirst()) {
+                String answer = cursor.getString(0);
+                String source = cursor.getString(1);
                 long ts = cursor.getLong(2);
                 if (System.currentTimeMillis() - ts > TTL_MS) {
+                    db.delete(TABLE, "hash = ?", new String[]{hash});
+                    return null;
+                }
+                if (isInvalidAnswerText(answer)) {
+                    Logx.w("QuestionCache: drop invalid cached answer, source=" + source);
                     db.delete(TABLE, "hash = ?", new String[]{hash});
                     return null;
                 }
@@ -95,8 +102,8 @@ public class QuestionCache {
                 update.put("timestamp", System.currentTimeMillis());
                 db.update(TABLE, update, "hash = ?", new String[]{hash});
                 return new CacheEntry(
-                        cursor.getString(0),
-                        cursor.getString(1)
+                        answer,
+                        source
                 );
             }
         } catch (Throwable t) {
@@ -119,6 +126,10 @@ public class QuestionCache {
      */
     public void put(String question, String options, String answer, String source) {
         if (question == null || answer == null) return;
+        if (isInvalidAnswerText(answer)) {
+            Logx.w("QuestionCache: skip invalid answer cache, source=" + source);
+            return;
+        }
         String hash = hash(question, options);
         SQLiteDatabase db = null;
         try {
@@ -164,6 +175,21 @@ public class QuestionCache {
             db.delete(TABLE, null, null);
         } catch (Throwable ignored) {
         }
+    }
+
+    public static boolean isInvalidAnswerText(String answer) {
+        if (answer == null) return true;
+        String normalized = answer.trim();
+        if (normalized.isEmpty()) return true;
+        return normalized.contains("凭证为空或者配置错误")
+                || normalized.contains("凭证未配置")
+                || normalized.contains("配置错误，请自行检查")
+                || normalized.contains("联系客服查看")
+                || normalized.contains("访问人数太多")
+                || normalized.contains("已执行限流")
+                || normalized.contains("请过段时间再试或携带柠檬题库Token调用")
+                || normalized.contains("请求失败")
+                || normalized.contains("token") && normalized.contains("错误");
     }
 
     /**

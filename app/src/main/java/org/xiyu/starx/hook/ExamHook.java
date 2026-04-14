@@ -12,10 +12,14 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.JsPromptResult;
+import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import org.xiyu.starx.answer.AnswerProvider;
 import org.xiyu.starx.util.AnswerMatcher;
@@ -28,6 +32,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import io.github.libxposed.api.XposedModule;
 
@@ -45,11 +50,37 @@ import io.github.libxposed.api.XposedModule;
 public class ExamHook {
     private static final String CONFIG_PREFS = "config";
     private static final String KEY_EXAM_ENABLED = "hook_exam_enabled";
+    private static final String PROMPT_BRIDGE_DEFAULT = "StarXBridgeV1";
+    private static final long PROMPT_QUERY_TIMEOUT_MS = 2600L;
+    private static final long PROMPT_IMAGE_QUERY_TIMEOUT_MS = 4200L;
+    private static final String QUESTION_ROOT_SELECTORS = ".TiMu,.tiMu,.singleQuesId,[id^=\"question\"],.questionLi,.Cy_TItle,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.mark_name,.question-wrap,.topic-item,.question-list li";
+    private static final String QUESTION_OPTION_SELECTORS = "li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.radio_option,.checkbox_option,.optionUl li,.answerBg .radioItemCont,.answerBg .checkItemCont,.optionItem,.questionLi .optionUl li,[class*=option] li,[class*=Option] li";
+    private static final String[] EXAM_URL_HINTS = new String[]{
+            "/exam/",
+            "/work/",
+            "/mooc2/work/",
+            "/knowledge/",
+            "/test/",
+            "/ztnodedetail/",
+            "dohomework",
+            "selectworkquestion",
+            "exam/test",
+            "task/work",
+            "work/task-list",
+            "work/stu-work",
+            "work/task/library",
+            "mooc-ans/exam/phone/task-list",
+            "exam/phone/selftest-list",
+            "phone/moocanalysis/selfscoredetail"
+    };
     private final XposedModule module;
     private final ClassLoader cl;
     private final AnswerProvider answerProvider;
     private final String jsInject;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService promptExecutor = java.util.concurrent.Executors.newCachedThreadPool();
+    private final java.util.Set<Integer> registeredWebViews = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Set<Class<?>> hookedPromptClients = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
     /**
      * JS 反切屏检测脚本 — 在考试页面加载时注入
@@ -170,6 +201,79 @@ public class ExamHook {
             "};" +
             "})()";
 
+    private static final String PROMPT_BRIDGE_BOOTSTRAP =
+            "(function(){" +
+            "if(window.__starxPromptBridgeReady)return 'ready';" +
+            "window.__starxPromptBridgeReady=true;" +
+            "function call(method,payload){" +
+            "try{" +
+            "return prompt(JSON.stringify({method:method,payload:payload||{}}),'StarXBridgeV1')||'';" +
+            "}catch(e){return '';}}" +
+            "var bridge=window._starx||{};" +
+            "bridge.queryAnswer=function(question){return call('queryAnswer',{question:question});};" +
+            "bridge.queryAnswerWithOptions=function(question,type,options){return call('queryAnswerWithOptions',{question:question,type:type,options:options});};" +
+            "bridge.queryAnswerWithImages=function(question,type,options,imageUrls){return call('queryAnswerWithImages',{question:question,type:type,options:options,imageUrls:imageUrls});};" +
+            "bridge.log=function(msg){call('log',{msg:String(msg)});};" +
+            "window._starx=bridge;" +
+            "return 'installed';" +
+            "})()";
+
+    private static final String QUERY_MONITOR_JS =
+            "(function(){" +
+            "if(window.__starxMonitorReady)return 'ready';" +
+            "window.__starxMonitorReady=true;" +
+            "function slog(msg){try{window._starx&&window._starx.log&&window._starx.log(msg);}catch(e){}}" +
+            "function wrap(name){" +
+            "if(!window._starx||!window._starx[name]||window._starx[name].__starxWrapped)return;" +
+            "var orig=window._starx[name];" +
+            "var wrapped=function(){" +
+            "var first=arguments.length?String(arguments[0]||''):'';" +
+            "slog('call:'+name+':' + first.substring(0,80));" +
+            "return orig.apply(this,arguments);" +
+            "};" +
+            "wrapped.__starxWrapped=true;" +
+            "window._starx[name]=wrapped;" +
+            "}" +
+            "wrap('queryAnswer');" +
+            "wrap('queryAnswerWithOptions');" +
+            "wrap('queryAnswerWithImages');" +
+            "document.addEventListener('click',function(e){" +
+            "try{" +
+            "var t=e.target;if(!t)return;" +
+            "var txt=((t.innerText||t.textContent||t.value||'')+'').replace(/\\s+/g,' ').trim();" +
+            "var hint=((t.id||'')+' '+(t.className||'')).toLowerCase();" +
+            "if(txt.indexOf('搜题')>=0||hint.indexOf('starx')>=0||hint.indexOf('search')>=0){" +
+            "slog('click:' + txt.substring(0,80) + ' #' + (t.id||'') + ' .' + (t.className||''));" +
+            "}" +
+            "}catch(err){}" +
+            "},true);" +
+            "return 'installed';" +
+            "})()";
+
+    private static final String SEARCH_BUTTON_LAYOUT_FIX_JS =
+            "(function(){" +
+            "if(window.__starxLayoutFixReady)return 'ready';" +
+            "window.__starxLayoutFixReady=true;" +
+            "function textOf(el){return ((el&&(el.innerText||el.textContent||el.value))||'').replace(/\\s+/g,' ').trim();}" +
+            "function compactText(text){return String(text||'').replace(/\\s+/g,'');}" +
+            "function visible(el){if(!el||!el.getBoundingClientRect)return false;var st=getComputedStyle(el);if(st.display==='none'||st.visibility==='hidden'||st.opacity==='0')return false;var r=el.getBoundingClientRect();return r.width>40&&r.height>20&&r.bottom>0&&r.right>0;}" +
+            "function setLabel(el,text){try{var tag=String(el.tagName||'').toLowerCase();if(tag==='input'||tag==='textarea'){el.value=text;}else{el.innerText=text;}}catch(e){}}" +
+            "function isSearchBtn(el){var txt=compactText(textOf(el));var hint=((el&&el.id||'')+' '+(el&&el.className||'')).toLowerCase();return hint.indexOf('starx')>=0||hint.indexOf('search')>=0||txt==='搜题'||txt==='搜题中'||txt==='私密搜题'||(txt.indexOf('搜题')>=0&&txt.length<=8);}" +
+            "function normalizeSearchBtn(el){var txt=compactText(textOf(el));if(!txt)return;var next=txt.indexOf('搜题中')>=0?'搜题中':'搜题';if(txt!==next)setLabel(el,next);}" +
+            "function searchButtons(){var nodes=document.querySelectorAll('div,button,a,span,input[type=button],input[type=submit],[role=button]');var list=[];for(var i=0;i<nodes.length;i++){var el=nodes[i];if(isSearchBtn(el)&&visible(el)){normalizeSearchBtn(el);list.push(el);}}return list;}" +
+            "function submitNodes(){return document.querySelectorAll('button,input[type=button],input[type=submit],a,div,span,[role=button],.submit,.subBtn,.submitBtn,.btn-submit,.btnBlue,.bluebtn,.mooc-btn,.answerSub,.chapter-submit,.chapterSubmit,.bottomBtn,.bottom-btn');}" +
+            "function isSubmitLike(el){var txt=compactText(textOf(el));var hint=((el.id||'')+' '+(el.className||'')).toLowerCase();return /提交|交卷|完成|确认|保存|下一题|下一步|提交答案|确定/.test(txt)||/submit|commit|finish|save|answer|next|chapter|btnblue|subbtn|submitbtn|btn-submit|bottombtn|bottom-btn/.test(hint);}" +
+            "function findBottomAnchor(){var nodes=submitNodes();var top=window.innerHeight;var found=false;for(var i=0;i<nodes.length;i++){var el=nodes[i];if(!el||isSearchBtn(el)||!visible(el))continue;var r=el.getBoundingClientRect();var st=getComputedStyle(el);var bottomPinned=(st.position==='fixed'||st.position==='sticky');if(r.top<window.innerHeight*0.45)continue;if(!(isSubmitLike(el)||(bottomPinned&&r.width>window.innerWidth*0.28&&r.height>=28)))continue;if(r.top<top){top=r.top;found=true;}}return found?top:null;}" +
+            "function calcBottom(){var anchorTop=findBottomAnchor();if(anchorTop===null)return 132;var gap=52;var desired=Math.round(window.innerHeight-anchorTop+gap);var maxBottom=Math.max(136,window.innerHeight-96);return Math.min(desired,maxBottom);}" +
+            "function placeToast(bottom){var nodes=document.querySelectorAll('div');for(var i=0;i<nodes.length;i++){var el=nodes[i];var txt=textOf(el);if(txt.indexOf('【隐私】')===0&&visible(el)){el.style.bottom=(bottom+72)+'px';}}}" +
+            "function apply(){var buttons=searchButtons();if(!buttons.length)return;var bottom=calcBottom();for(var i=0;i<buttons.length;i++){var btn=buttons[i];normalizeSearchBtn(btn);btn.style.position='fixed';btn.style.right='12px';btn.style.left='auto';btn.style.bottom=bottom+'px';btn.style.transform='none';btn.style.zIndex='99999';btn.style.maxWidth='calc(100vw - 24px)';btn.style.boxSizing='border-box';}placeToast(bottom);}" +
+            "window.addEventListener('resize',apply,true);" +
+            "window.addEventListener('scroll',apply,true);" +
+            "try{new MutationObserver(function(){apply();}).observe(document.documentElement||document.body,{childList:true,subtree:true,attributes:true});}catch(e){}" +
+            "setTimeout(apply,120);setTimeout(apply,800);setTimeout(apply,1800);apply();" +
+            "return 'installed';" +
+            "})()";
+
     public ExamHook(XposedModule module, ClassLoader cl, AnswerProvider answerProvider, String jsInject) {
         this.module = module;
         this.cl = cl;
@@ -183,6 +287,7 @@ public class ExamHook {
             return;
         }
         hookVideoTestAutoAnswer();
+        hookPromptBridge();
         hookWebViewExam();
         hookOcrResult();
         hookActivityQuestion();
@@ -314,6 +419,25 @@ public class ExamHook {
 
     private void hookWebViewExam() {
         try {
+            Method setWebChromeClient = WebView.class.getDeclaredMethod("setWebChromeClient", WebChromeClient.class);
+            module.hook(setWebChromeClient).intercept(chain -> {
+                WebChromeClient client = (WebChromeClient) chain.getArg(0);
+                if (client != null) hookPromptBridge(client.getClass());
+                return chain.proceed();
+            });
+
+            // Hook loadUrl — 在页面导航开始前注册 JavascriptInterface
+            // addJavascriptInterface 必须在页面加载前注册，否则对已加载页面不可见
+            Method loadUrl = WebView.class.getDeclaredMethod("loadUrl", String.class);
+            module.hook(loadUrl).intercept(chain -> {
+                WebView wv = (WebView) chain.getThisObject();
+                String url = (String) chain.getArg(0);
+                if (isExamEnabled() && url != null && shouldProbeExamPage(url)) {
+                    ensureBridgeRegistered(wv);
+                }
+                return chain.proceed();
+            });
+
             Method onPageFinished = android.webkit.WebViewClient.class.getDeclaredMethod(
                     "onPageFinished", WebView.class, String.class);
             module.hook(onPageFinished).intercept(chain -> {
@@ -323,8 +447,15 @@ public class ExamHook {
                 if (url != null && isExamUrl(url)) {
                     WebView wv = (WebView) chain.getArg(0);
                     Logx.i("ExamHook: exam page loaded: " + url);
+                    // 确保 bridge 已注册（覆盖非 loadUrl 入口的场景）
+                    ensureBridgeRegistered(wv);
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 1500);
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 4000);
+                } else if (url != null && shouldProbeExamPage(url)) {
+                    WebView wv = (WebView) chain.getArg(0);
+                    ensureBridgeRegistered(wv);
+                    mainHandler.postDelayed(() -> probeAndInjectExamPage(wv, url), 1200);
+                    mainHandler.postDelayed(() -> probeAndInjectExamPage(wv, url), 3200);
                 }
                 return result;
             });
@@ -332,6 +463,128 @@ public class ExamHook {
         } catch (Throwable t) {
             Logx.w("ExamHook: WebView hook failed: " + t.getMessage());
         }
+    }
+
+    /** 确保 _starx bridge 已注册到 WebView（幂等） */
+    private void ensureBridgeRegistered(WebView wv) {
+        int id = System.identityHashCode(wv);
+        if (registeredWebViews.add(id)) {
+            wv.addJavascriptInterface(new StarXJsBridge(wv), "_starx");
+            Logx.i("ExamHook: bridge registered on WebView@" + Integer.toHexString(id));
+        }
+    }
+
+    private void hookPromptBridge() {
+        hookPromptBridge(WebChromeClient.class);
+        try {
+            Method onJsPrompt = WebChromeClient.class.getDeclaredMethod(
+                    "onJsPrompt", WebView.class, String.class, String.class, String.class, JsPromptResult.class);
+            module.hook(onJsPrompt).intercept(chain -> {
+                WebView webView = (WebView) chain.getArg(0);
+                String message = (String) chain.getArg(2);
+                String defaultValue = (String) chain.getArg(3);
+                JsPromptResult promptResult = (JsPromptResult) chain.getArg(4);
+                if (tryHandlePromptBridge(webView, message, defaultValue, promptResult)) {
+                    return true;
+                }
+                return chain.proceed();
+            });
+            Logx.i("ExamHook: prompt bridge fallback hooked");
+        } catch (Throwable t) {
+            Logx.w("ExamHook: prompt bridge fallback hook failed: " + t.getMessage());
+        }
+    }
+
+    private void hookPromptBridge(Class<?> clientClass) {
+        if (clientClass == null || !hookedPromptClients.add(clientClass)) return;
+        try {
+            Method method = findMethodInHierarchy(clientClass,
+                    "onJsPrompt",
+                    WebView.class,
+                    String.class,
+                    String.class,
+                    String.class,
+                    JsPromptResult.class);
+            if (method == null) return;
+            module.hook(method).intercept(chain -> {
+                WebView webView = (WebView) chain.getArg(0);
+                String message = (String) chain.getArg(2);
+                String defaultValue = (String) chain.getArg(3);
+                JsPromptResult promptResult = (JsPromptResult) chain.getArg(4);
+                if (tryHandlePromptBridge(webView, message, defaultValue, promptResult)) {
+                    return true;
+                }
+                return chain.proceed();
+            });
+            Logx.i("ExamHook: prompt bridge hooked on " + clientClass.getName());
+        } catch (Throwable t) {
+            Logx.w("ExamHook: prompt bridge hook failed on " + clientClass.getName() + ": " + t.getMessage());
+        }
+    }
+
+    private boolean tryHandlePromptBridge(WebView webView, String message, String defaultValue, JsPromptResult promptResult) {
+        if (!PROMPT_BRIDGE_DEFAULT.equals(defaultValue) || message == null) return false;
+        final String requestMessage = message;
+        promptExecutor.execute(() -> handlePromptBridgeAsync(webView, requestMessage, promptResult));
+        return true;
+    }
+
+    private void handlePromptBridgeAsync(WebView webView, String message, JsPromptResult promptResult) {
+        String result = "";
+        String method = "";
+        long startedAt = System.currentTimeMillis();
+        try {
+            JSONObject request = new JSONObject(message);
+            method = request.optString("method", "");
+            JSONObject payload = request.optJSONObject("payload");
+            if (payload == null) payload = new JSONObject();
+            switch (method) {
+                case "queryAnswer":
+                    result = queryAnswerWithOptionsInternal(
+                            webView,
+                            payload.optString("question", null),
+                            -1,
+                            null,
+                            PROMPT_QUERY_TIMEOUT_MS);
+                    break;
+                case "queryAnswerWithOptions":
+                    result = queryAnswerWithOptionsInternal(
+                            webView,
+                            payload.optString("question", null),
+                            payload.optInt("type", -1),
+                            payload.optString("options", null),
+                            PROMPT_QUERY_TIMEOUT_MS);
+                    break;
+                case "queryAnswerWithImages":
+                    result = queryAnswerWithImagesInternal(
+                            webView,
+                            payload.optString("question", null),
+                            payload.optInt("type", -1),
+                            payload.optString("options", null),
+                            payload.optString("imageUrls", null),
+                            PROMPT_IMAGE_QUERY_TIMEOUT_MS);
+                    break;
+                case "log":
+                    Logx.i("ExamHook[JS]: " + payload.optString("msg", ""));
+                    break;
+                default:
+                    Logx.w("ExamHook: unknown prompt bridge method: " + method);
+                    break;
+            }
+        } catch (Throwable t) {
+            Logx.w("ExamHook: prompt bridge parse failed: " + t.getMessage());
+        }
+        final String safeMethod = method.isEmpty() ? "unknown" : method;
+        final String safeResult = result != null ? result : "";
+        final long costMs = System.currentTimeMillis() - startedAt;
+        mainHandler.post(() -> {
+            try {
+                promptResult.confirm(safeResult);
+            } catch (Throwable t) {
+                Logx.w("ExamHook: prompt result confirm failed: " + t.getMessage());
+            }
+        });
+        Logx.i("ExamHook: prompt bridge handled " + safeMethod + " in " + costMs + "ms");
     }
 
     // =======================================================================
@@ -430,11 +683,57 @@ public class ExamHook {
     }
 
     private boolean isExamUrl(String url) {
-        if (url.startsWith("javascript:")) return false;
-        return url.contains("/exam/") || url.contains("/work/") || url.contains("/mooc2/work/")
-                || url.contains("/knowledge/") || url.contains("/test/") || url.contains("/ztnodedetail/")
-                || url.contains("doHomeWork") || url.contains("selectWorkQuestion")
-                || url.contains("exam/test") || url.contains("task/work");
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("javascript:") || lower.startsWith("about:blank")) return false;
+        for (String hint : EXAM_URL_HINTS) {
+            if (lower.contains(hint)) return true;
+        }
+        return (lower.contains("chaoxing.com") || lower.contains("xuexi365.com"))
+                && (lower.contains("courseid=") || lower.contains("classid=") || lower.contains("cpi="))
+                && (lower.contains("work") || lower.contains("exam") || lower.contains("test") || lower.contains("homework"));
+    }
+
+    private boolean shouldProbeExamPage(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("javascript:") || lower.startsWith("about:blank")) return false;
+        if (!lower.startsWith("http")) return false;
+        return isExamUrl(lower) || lower.contains("chaoxing.com") || lower.contains("xuexi365.com");
+    }
+
+    private void probeAndInjectExamPage(WebView webView, String url) {
+        if (webView == null || !isExamEnabled()) return;
+        try {
+            webView.evaluateJavascript(buildQuestionPageProbeJs(), value -> {
+                String normalized = value != null ? value.trim() : "0";
+                if ("1".equals(normalized)) {
+                    Logx.i("ExamHook: question probe matched => " + url);
+                    injectStarXScript(webView);
+                }
+            });
+        } catch (Throwable t) {
+            Logx.w("ExamHook: question probe failed: " + t.getMessage());
+        }
+    }
+
+    private String buildQuestionPageProbeJs() {
+        return "(function(){"
+                + "try{" 
+                + "function examHref(h){if(!h)return false;h=String(h).toLowerCase();return h.indexOf('work/index_wap.html')>=0||h.indexOf('work/task-list')>=0||h.indexOf('work/stu-work')>=0||h.indexOf('work/task/library')>=0||h.indexOf('mooc-ans/exam/phone/task-list')>=0||h.indexOf('exam/phone/selftest-list')>=0||h.indexOf('/exam/')>=0||h.indexOf('/test/')>=0||h.indexOf('phone/moocanalysis/selfscoredetail')>=0;}"
+                + "function textOf(node){return ((node&&(node.innerText||node.textContent||node.value))||'').replace(/\\s+/g,' ').trim();}"
+                + "var roots=document.querySelectorAll(" + jsonEscapeForJs(QUESTION_ROOT_SELECTORS) + ");"
+                + "if(roots&&roots.length>0)return 1;"
+                + "var iframes=document.querySelectorAll('iframe');"
+                + "for(var i=0;i<iframes.length;i++){try{var doc=iframes[i].contentDocument||iframes[i].contentWindow.document;if(doc&&doc.querySelector(" + jsonEscapeForJs(QUESTION_ROOT_SELECTORS) + "))return 1;var href=((doc&&doc.location&&doc.location.href)||'');if(examHref(href))return 1;}catch(e){}}"
+                + "var options=document.querySelectorAll(" + jsonEscapeForJs(QUESTION_OPTION_SELECTORS) + ");"
+                + "var submitLike=0;var nodes=document.querySelectorAll('button,input[type=submit],input[type=button],.btnBlue,.submitBtn,.answerSub,.nextBtn,.saveBtn,[role=button]');"
+                + "for(var j=0;j<nodes.length;j++){var txt=textOf(nodes[j]).toLowerCase();if(/提交|交卷|保存|确认|下一题|下一步|submit|finish|next|save/.test(txt)){submitLike=1;break;}}"
+                + "var bodyText=textOf(document.body).toLowerCase();"
+                + "if(options.length>=2&&submitLike&&(bodyText.indexOf('作业')>=0||bodyText.indexOf('考试')>=0||bodyText.indexOf('测验')>=0||bodyText.indexOf('homework')>=0||bodyText.indexOf('exam')>=0))return 1;"
+                + "return 0;"
+                + "}catch(e){return 0;}"
+                + "})()";
     }
 
     private void injectStarXScript(WebView webView) {
@@ -451,10 +750,67 @@ public class ExamHook {
             return;
         }
         try {
-            webView.addJavascriptInterface(new StarXJsBridge(webView), "_starx");
+            ensureBridgeRegistered(webView);
+            String normalizedJsInject = normalizeInjectedUiScript(jsInject);
+
+            webView.evaluateJavascript(PROMPT_BRIDGE_BOOTSTRAP, value ->
+                    Logx.i("ExamHook: prompt bridge injected: " + value));
             webView.evaluateJavascript(QUERY_UPGRADE_SHIM, null);
-            // 先安装 shim，再执行服务端脚本，覆盖脚本初始化阶段的同步搜题调用
-            webView.evaluateJavascript(jsInject, null);
+
+            String questionSelectors = QUESTION_ROOT_SELECTORS;
+            String mainUiInjectJs =
+                "(function(){" +
+                "try{" +
+                "  var hasQuestions=!!document.querySelector(" + jsonEscapeForJs(questionSelectors) + ");" +
+                "  var iframeCount=document.querySelectorAll('iframe').length;" +
+                "  if(!hasQuestions&&iframeCount>0)return 'skip_main_ui:iframes='+iframeCount;" +
+                "}catch(e){}" +
+                normalizedJsInject +
+                "return 'main_ui_injected';" +
+                "})()";
+            webView.evaluateJavascript(mainUiInjectJs, value ->
+                    Logx.i("ExamHook: main search ui inject: " + value));
+            webView.evaluateJavascript(QUERY_MONITOR_JS, value ->
+                    Logx.i("ExamHook: query monitor injected: " + value));
+                webView.evaluateJavascript(SEARCH_BUTTON_LAYOUT_FIX_JS, value ->
+                    Logx.i("ExamHook: search button layout fix injected: " + value));
+
+            // 向所有同源 iframe 注入桥接；若 iframe 内实际有题，则恢复独立搜题按钮
+            String iframeInjectJs =
+                "(function(){" +
+                "var iframes=document.querySelectorAll('iframe');" +
+                "var count=0,uiCount=0;" +
+                "var mainHasQuestions=false;" +
+                "function isExamHref(href){if(!href)return false;href=String(href).toLowerCase();return href.indexOf('work/index_wap.html')>=0||href.indexOf('work/task-list')>=0||href.indexOf('work/stu-work')>=0||href.indexOf('work/task/library')>=0||href.indexOf('mooc-ans/exam/phone/task-list')>=0||href.indexOf('exam/phone/selftest-list')>=0||href.indexOf('/exam/')>=0||href.indexOf('/test/')>=0||href.indexOf('phone/moocanalysis/selfscoredetail')>=0;}" +
+                "try{mainHasQuestions=!!document.querySelector(" + jsonEscapeForJs(questionSelectors) + ");}catch(e){}" +
+                "for(var i=0;i<iframes.length;i++){" +
+                "  try{" +
+                "    var doc=iframes[i].contentDocument||iframes[i].contentWindow.document;" +
+                "    var parent=(doc.head||doc.documentElement||doc.body);" +
+                "    if(!doc||!parent)continue;" +
+                "    var bridge=doc.createElement('script');" +
+                "    bridge.textContent=" + jsonEscapeForJs(PROMPT_BRIDGE_BOOTSTRAP + ";" + QUERY_UPGRADE_SHIM + ";" + QUERY_MONITOR_JS + ";" + SEARCH_BUTTON_LAYOUT_FIX_JS) + ";" +
+                "    parent.appendChild(bridge);" +
+                "    count++;" +
+                "    var href='';" +
+                "    var hasQuestions=false;" +
+                "    try{" +
+                "      href=((doc.location&&doc.location.href)||'').toLowerCase();" +
+                "      hasQuestions=!!doc.querySelector(" + jsonEscapeForJs(questionSelectors) + ");" +
+                "    }catch(e){}" +
+                "    if(!mainHasQuestions&&(hasQuestions||isExamHref(href))){" +
+                "      var ui=doc.createElement('script');" +
+                "      ui.textContent=" + jsonEscapeForJs(normalizedJsInject) + ";" +
+                "      parent.appendChild(ui);" +
+                "      uiCount++;" +
+                "    }" +
+                "  }catch(e){}" +
+                "}" +
+                "return 'injected_iframes='+count+',ui='+uiCount+',mainHasQuestions='+(mainHasQuestions?1:0);" +
+                "})()";
+            webView.evaluateJavascript(iframeInjectJs, value ->
+                Logx.i("ExamHook: iframe inject: " + value));
+
             Logx.i("ExamHook: JS injected (with shim)");
         } catch (Throwable t) {
             Logx.w("ExamHook: JS inject failed: " + t.getMessage());
@@ -468,7 +824,7 @@ public class ExamHook {
 
         @android.webkit.JavascriptInterface
         public String queryAnswer(String question) {
-            return queryAnswerWithOptions(question, -1, null);
+            return queryAnswerWithOptionsInternal(webView, question, -1, null, 20000);
         }
 
         /**
@@ -480,51 +836,70 @@ public class ExamHook {
          */
         @android.webkit.JavascriptInterface
         public String queryAnswerWithImages(String question, int type, String options, String imageUrls) {
-            if (!isExamEnabled()) {
-                Logx.i("ExamHook[JS→Java]: blocked by config");
-                return "";
-            }
-            if ((question == null || question.trim().isEmpty())
-                    && (imageUrls == null || imageUrls.trim().isEmpty())) {
-                Logx.w("ExamHook[JS→Java]: no question or images, skipping");
-                return "";
-            }
-            String q = question != null ? question.trim() : "";
-            String preview = q.length() > 60 ? q.substring(0, 60) : q;
-            boolean hasImages = imageUrls != null && !imageUrls.trim().isEmpty();
-            Logx.i("ExamHook[JS→Java]: " + preview + (hasImages ? " [+img]" : ""));
-            mainHandler.post(() -> android.widget.Toast.makeText(
-                    webView.getContext(),
-                    hasImages ? "[隐私] 正在识别图片并搜题..." : "[隐私] 正在搜题...",
-                    android.widget.Toast.LENGTH_SHORT).show());
-
-            // 解析图片 URL 列表
-            java.util.List<String> imgList = null;
-            if (hasImages) {
-                imgList = new java.util.ArrayList<>();
-                for (String u : imageUrls.split("\\n")) {
-                    String trimmed = u.trim();
-                    if (!trimmed.isEmpty()) imgList.add(trimmed);
-                }
-                if (imgList.isEmpty()) imgList = null;
-            }
-
-            AnswerProvider.Result r = answerProvider.queryWithTimeout(
-                    q, type, options, imgList, 25000);
-            if (r != null) {
-                Logx.i("★ 答案[" + r.source + "] => " + r.answer);
-                final String src = r.source;
-                final String answer = r.answer;
-                mainHandler.post(() -> showAnswerOverlay(webView.getContext(),
-                        "[隐私 · " + src + "] " + answer));
-                return r.answer;
-            }
-            mainHandler.post(() -> android.widget.Toast.makeText(
-                    webView.getContext(), "[隐私] 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
-            return "";
+            return queryAnswerWithImagesInternal(webView, question, type, options, imageUrls, 25000);
         }
         @android.webkit.JavascriptInterface
         public String queryAnswerWithOptions(String question, int type, String options) {
+            return queryAnswerWithOptionsInternal(webView, question, type, options, 20000);
+        }
+
+        @android.webkit.JavascriptInterface
+        public void log(String msg) { Logx.i("ExamHook[JS]: " + msg); }
+    }
+
+    private String queryAnswerWithImagesInternal(WebView webView,
+                                                 String question,
+                                                 int type,
+                                                 String options,
+                                                 String imageUrls,
+                                                 long timeoutMs) {
+        if (!isExamEnabled()) {
+            Logx.i("ExamHook[JS→Java]: blocked by config");
+            return "";
+        }
+        if ((question == null || question.trim().isEmpty())
+                && (imageUrls == null || imageUrls.trim().isEmpty())) {
+            Logx.w("ExamHook[JS→Java]: no question or images, skipping");
+            return "";
+        }
+        String q = question != null ? question.trim() : "";
+        String preview = q.length() > 60 ? q.substring(0, 60) : q;
+        boolean hasImages = imageUrls != null && !imageUrls.trim().isEmpty();
+        Logx.i("ExamHook[JS→Java]: " + preview + (hasImages ? " [+img]" : ""));
+        mainHandler.post(() -> android.widget.Toast.makeText(
+                webView.getContext(),
+                hasImages ? "[隐私] 正在识别图片并搜题..." : "[隐私] 正在搜题...",
+                android.widget.Toast.LENGTH_SHORT).show());
+
+        java.util.List<String> imgList = null;
+        if (hasImages) {
+            imgList = new java.util.ArrayList<>();
+            for (String u : imageUrls.split("\\n")) {
+                String trimmed = u.trim();
+                if (!trimmed.isEmpty()) imgList.add(trimmed);
+            }
+            if (imgList.isEmpty()) imgList = null;
+        }
+
+        AnswerProvider.Result r = answerProvider.queryWithTimeout(q, type, options, imgList, timeoutMs);
+        if (r != null) {
+            Logx.i("★ 答案[" + r.source + "] => " + r.answer);
+            final String src = r.source;
+            final String answer = r.answer;
+            mainHandler.post(() -> showAnswerOverlay(webView.getContext(),
+                    "[隐私 · " + src + "] " + answer));
+            return r.answer;
+        }
+        mainHandler.post(() -> android.widget.Toast.makeText(
+                webView.getContext(), "[隐私] 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
+        return "";
+    }
+
+    private String queryAnswerWithOptionsInternal(WebView webView,
+                                                  String question,
+                                                  int type,
+                                                  String options,
+                                                  long timeoutMs) {
             if (!isExamEnabled()) {
                 Logx.i("ExamHook[JS→Java]: blocked by config");
                 return "";
@@ -538,7 +913,7 @@ public class ExamHook {
             Logx.i("ExamHook[JS→Java]: " + preview);
             mainHandler.post(() -> android.widget.Toast.makeText(
                     webView.getContext(), "[隐私] 正在搜题...", android.widget.Toast.LENGTH_SHORT).show());
-            AnswerProvider.Result r = answerProvider.queryWithTimeout(question, type, options, 20000);
+                AnswerProvider.Result r = answerProvider.queryWithTimeout(question, type, options, timeoutMs);
             if (r != null) {
                 Logx.i("★ 答案[" + r.source + "] => " + r.answer);
                 final String src = r.source;
@@ -552,10 +927,6 @@ public class ExamHook {
                     webView.getContext(), "[隐私] 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
             return "";
         }
-
-        @android.webkit.JavascriptInterface
-        public void log(String msg) { Logx.i("ExamHook[JS]: " + msg); }
-    }
 
     /**
      * 推断题型: -1=未知 0=单选 1=多选 2=填空 3=判断 4=简答
@@ -798,6 +1169,20 @@ public class ExamHook {
         return -1;
     }
 
+    private static Method findMethodInHierarchy(Class<?> type, String name, Class<?>... parameterTypes) {
+        Class<?> current = type;
+        while (current != null) {
+            try {
+                Method method = current.getDeclaredMethod(name, parameterTypes);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException ignored) {
+                current = current.getSuperclass();
+            }
+        }
+        return null;
+    }
+
     private boolean isExamEnabled() {
         try {
             var prefs = module.getRemotePreferences(CONFIG_PREFS);
@@ -809,4 +1194,34 @@ public class ExamHook {
     }
 
     // JS 注入脚本由服务端下发，存储在 jsInject 字段
+
+    private static String normalizeInjectedUiScript(String script) {
+        if (script == null || script.isEmpty()) return script;
+        return script
+                .replace("🔍 私密搜题", "搜题")
+                .replace("🔍私密搜题", "搜题")
+                .replace("🔍 搜题", "搜题")
+                .replace("🔍搜题", "搜题")
+                .replace("私密搜题", "搜题");
+    }
+
+    /** 将 Java 字符串转为 JS 字符串字面量（含引号），可安全嵌入 evaluateJavascript */
+    private static String jsonEscapeForJs(String s) {
+        if (s == null) return "''";
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        sb.append('\'');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '\'': sb.append("\\'"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '<':  sb.append("\\x3c"); break;  // 防止 </script> 闭合
+                default:   sb.append(c);
+            }
+        }
+        sb.append('\'');
+        return sb.toString();
+    }
 }

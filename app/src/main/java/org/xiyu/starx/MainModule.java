@@ -86,18 +86,16 @@ public class MainModule extends XposedModule {
 
         // 从服务端配置加载类名和端点
         CxClasses.init(config.classes);
-        TikuApi.init(config.tikuEndpoints);
         Logx.i("StarX: license OK, config v" + config.version);
 
-        // === 初始化柠檬题库 ===
+        // === 初始化多题库 ===
         try {
             var prefs = getRemotePreferences("config");
-            String lemtkUrl = prefs.getString("lemtk_url", "");
-            String lemtkToken = prefs.getString("lemtk_token", "");
-            LemTkApi.init(lemtkUrl, lemtkToken);
-            Logx.i("LemTkApi initialized");
+            String tikuSourcesJson = prefs.getString("tiku_sources_json", "");
+            TikuApi.init(config.tikuEndpoints, tikuSourcesJson);
+            Logx.i("TikuApi initialized");
         } catch (Throwable t) {
-            Logx.w("LemTkApi init failed: " + t.getMessage());
+            Logx.w("TikuApi init failed: " + t.getMessage());
         }
 
         // === 初始化题库缓存 ===

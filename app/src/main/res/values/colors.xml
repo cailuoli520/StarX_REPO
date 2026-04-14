@@ -3,8 +3,11 @@
     <color name="ios_bg_start">#EEF4FA</color>
     <color name="ios_bg_center">#F8FAFD</color>
     <color name="ios_bg_end">#E7EEF8</color>
+    <color name="ios_bg_glow">#FFF2F6FB</color>
 
     <color name="ios_blue">#FF0A84FF</color>
+    <color name="ios_blue_deep">#FF2458D6</color>
+    <color name="ios_blue_light">#FF5DA9FF</color>
     <color name="ios_blue_ripple">#330A84FF</color>
     <color name="ios_green">#FF34C759</color>
     <color name="ios_red">#FFFF453A</color>
@@ -20,12 +23,19 @@
     <color name="ios_card_stroke">#5CFFFFFF</color>
 
     <color name="ios_panel_top">#F2FFFFFF</color>
+    <color name="ios_panel_glow">#F8FCFFFF</color>
     <color name="ios_panel_bottom">#D6F7FAFF</color>
     <color name="ios_panel_stroke">#66FFFFFF</color>
 
     <color name="ios_chip_top">#F7FFFFFF</color>
+    <color name="ios_chip_glow">#FFF7FAFD</color>
     <color name="ios_chip_bottom">#D9FFFFFF</color>
     <color name="ios_chip_stroke">#73FFFFFF</color>
+
+    <color name="ios_card_glow">#FFF5F9FD</color>
+
+    <color name="ios_nav_active_top">#FFF3F8FF</color>
+    <color name="ios_nav_active_bottom">#FFDCEBFF</color>
 
     <color name="ios_input_bg">#FFF7F8FC</color>
     <color name="ios_input_top">#F9FFFFFF</color>

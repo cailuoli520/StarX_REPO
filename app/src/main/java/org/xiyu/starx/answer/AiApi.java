@@ -76,15 +76,23 @@ public class AiApi {
      * 向 AI 提问，返回答案文本；失败返回 null
      */
     public String ask(String question) {
+        return ask(question, -1, null);
+    }
+
+    /**
+     * 向 AI 提问，携带题型和选项，提升选择题命中率。
+     */
+    public String ask(String question, int type, String options) {
         if (!isConfigured()) return null;
         if (question == null || question.trim().isEmpty()) return null;
         if (Thread.currentThread().isInterrupted()) return null;
 
         String cleaned = question.replaceAll("<[^>]*>", "").replaceAll("\\s+", " ").trim();
+        String prompt = buildQuestionPrompt(cleaned, type, options);
         try {
-            String answer = (provider == Provider.GEMINI) ? askGemini(cleaned) : askOpenAI(cleaned);
+            String answer = (provider == Provider.GEMINI) ? askGemini(prompt) : askOpenAI(prompt);
             if (answer != null) {
-                answer = answer.trim();
+                answer = normalizeAnswer(answer);
                 Logx.i("AiApi[" + provider + "]: => " + answer);
             }
             return answer;
@@ -189,7 +197,7 @@ public class AiApi {
     // ========== Google Gemini ==========
 
     private String askGemini(String question) throws Exception {
-        String fullPrompt = SYSTEM_PROMPT + "\n\n题目：\n" + question;
+        String fullPrompt = SYSTEM_PROMPT + "\n\n" + question;
         String json = "{\"contents\":[{\"parts\":[{\"text\":\"" + escapeJson(fullPrompt) + "\"}]}],"
                 + "\"generationConfig\":{\"maxOutputTokens\":512,\"temperature\":0.1}}";
 
@@ -232,6 +240,67 @@ public class AiApi {
         }
         if (quoteEnd >= json.length()) return null;
         return unescapeJson(json.substring(quoteStart + 1, quoteEnd));
+    }
+
+    private String buildQuestionPrompt(String question, int type, String options) {
+        StringBuilder prompt = new StringBuilder();
+        String typeName = mapQuestionType(type);
+        if (typeName != null) {
+            prompt.append("题型：").append(typeName).append("\n");
+        }
+        prompt.append("题目：\n").append(question);
+        if (options != null && !options.trim().isEmpty()) {
+            String[] parts = options.split("\\|");
+            if (parts.length > 0) {
+                prompt.append("\n\n选项：\n");
+                for (int i = 0; i < parts.length; i++) {
+                    String item = parts[i] != null ? parts[i].trim() : "";
+                    if (item.isEmpty()) continue;
+                    char label = (char) ('A' + Math.min(i, 25));
+                    prompt.append(label).append(". ").append(item).append("\n");
+                }
+            }
+        }
+        prompt.append("\n请严格只输出最终答案，不要解释。");
+        return prompt.toString();
+    }
+
+    private String mapQuestionType(int type) {
+        switch (type) {
+            case 0:
+                return "单选题";
+            case 1:
+                return "多选题";
+            case 2:
+                return "填空题";
+            case 3:
+                return "判断题";
+            case 4:
+                return "简答题";
+            default:
+                return null;
+        }
+    }
+
+    private String normalizeAnswer(String answer) {
+        if (answer == null) return null;
+        String normalized = answer.trim();
+        if (normalized.isEmpty()) return null;
+        normalized = normalized.replaceAll("(?is)^```[a-zA-Z0-9_-]*\\s*", "");
+        normalized = normalized.replaceAll("(?is)```$", "").trim();
+        normalized = normalized.replaceFirst("^(答案|正确答案|参考答案|最终答案)\\s*[:：]\\s*", "").trim();
+        int cut = normalized.indexOf("\n解析");
+        if (cut > 0) normalized = normalized.substring(0, cut).trim();
+        cut = normalized.indexOf("\n说明");
+        if (cut > 0) normalized = normalized.substring(0, cut).trim();
+        if (normalized.contains("无法确定")
+                || normalized.contains("没有足够信息")
+                || normalized.contains("请提供更多")
+                || normalized.contains("无法回答")
+                || normalized.contains("题目信息不足")) {
+            return null;
+        }
+        return normalized.isEmpty() ? null : normalized;
     }
 
     // ========== HTTP / Util ==========

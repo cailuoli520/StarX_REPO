@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="16dp"
+    android:orientation="vertical"
+    android:background="@drawable/card_bg"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/text_source_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="题库源"
+        android:textColor="@color/ios_label"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <Switch
+        android:id="@+id/switch_source_enabled"
+        style="@style/Widget_StarX_Switch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="启用该题库"
+        android:textColor="@color/ios_label" />
+
+    <EditText
+        android:id="@+id/edit_source_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/ios_input_bg"
+        android:hint="题库名称"
+        android:padding="14dp"
+        android:textColor="@color/ios_label"
+        android:textColorHint="@color/ios_tertiary_label" />
+
+    <Button
+        android:id="@+id/btn_source_mode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/btn_map_secondary"
+        android:paddingHorizontal="16dp"
+        android:text="协议：自动识别"
+        android:textAllCaps="false"
+        android:textColor="@color/ios_label" />
+
+    <EditText
+        android:id="@+id/edit_source_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/ios_input_bg"
+        android:hint="题库接口地址"
+        android:inputType="textUri"
+        android:padding="14dp"
+        android:textColor="@color/ios_label"
+        android:textColorHint="@color/ios_tertiary_label" />
+
+    <EditText
+        android:id="@+id/edit_source_token"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/ios_input_bg"
+        android:hint="Token（或 adapter 查询参数）"
+        android:padding="14dp"
+        android:textColor="@color/ios_label"
+        android:textColorHint="@color/ios_tertiary_label" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_source_quick_fill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/btn_map_secondary"
+            android:paddingHorizontal="16dp"
+            android:text="填入 ZXSeek 官方地址"
+            android:textAllCaps="false"
+            android:textColor="@color/ios_label"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btn_source_delete"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/btn_map_secondary"
+            android:paddingHorizontal="16dp"
+            android:text="删除该源"
+            android:textAllCaps="false"
+            android:textColor="@color/ios_label"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</LinearLayout>
