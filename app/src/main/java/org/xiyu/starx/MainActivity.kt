@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
@@ -57,9 +56,13 @@ class MainActivity : Activity(), App.ServiceStateListener {
     private data class TikuSourceViews(
         val rootView: View,
         val titleView: TextView,
+        val modeHintView: TextView,
         val enabledSwitch: Switch,
         val nameEdit: EditText,
-        val modeButton: Button,
+        val autoModeButton: Button,
+        val lemtkModeButton: Button,
+        val adapterModeButton: Button,
+        val zxseekModeButton: Button,
         val urlEdit: EditText,
         val tokenEdit: EditText,
         val quickFillButton: Button,
@@ -71,6 +74,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val PREFS_SIGN = "sign_config"
         private const val RC_MAP_PICKER = 2001
         private const val TG_GROUP_URL = "https://t.me/+BUfEUGzViTg2YWU1"
+        private const val PUBLIC_FEEDBACK_URL = "https://github.com/Mai-xiyu/StarX/issues/new/choose"
         private const val KEY_TIKU_SOURCES_JSON = "tiku_sources_json"
         private const val KEY_TIKU_SOURCE_SCHEMA_VERSION = "tiku_source_schema_version"
         private const val KEY_CACHE_ENABLED = "cache_enabled"
@@ -80,6 +84,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_AUTO_TARGET_ADDR = "auto_target_addr"
         private const val KEY_SIGN_CODE = "assist_sign_code"
         private const val KEY_QR_PAYLOAD = "assist_qr_payload"
+        private const val KEY_H5_QR_PAYLOAD = "assist_qr_h5_payload"
+        private const val KEY_NATIVE_QR_PAYLOAD = "assist_qr_native_payload"
         private const val KEY_PHOTO_URI = "assist_photo_uri"
         private const val KEY_SIGN_LAST_MODE = "assist_last_mode"
         private const val KEY_SIGN_LAST_ACTION = "assist_last_action"
@@ -153,7 +159,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.versionBadge.text = "v$VERSION_NAME"
         binding.homeUpdateValue.text = "当前版本 v$VERSION_NAME"
         binding.homeAnnouncement.text = latestAnnouncementText
-        binding.homeBankSummary.text = "默认支持内置公共题库、LemTk 兼容节点、tikuAdapter 标准接口与 zxseek/wkexam 简易接口，也可手动切换协议类型。"
+        binding.homeBankSummary.text = "默认支持内置公共题库、LemTk 兼容节点、tikuAdapter 标准接口与 zxseek/wkexam 简易接口，协议可在卡片内直接切换。"
         binding.homeBankBadge.text = "题库 3源"
         binding.homeFeatureSummary.text = "已启用 0/8 项功能"
         binding.homeAiBadge.text = "AI 未配置"
@@ -165,7 +171,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.profileDeviceInfo.text = "设备信息待获取"
         binding.switchAutoSignTarget.isChecked = true
         binding.textAutoLocationStatus.text = "自动抓取已开启，进入定位签到页后会自动更新目标区域。"
-        binding.textSignAssistStatus.text = "可预填手势口令、H5 二维码参数或原生 signId/time 载荷，以及拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
+        binding.textSignAssistStatus.text = "可分别预填手势口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
         updateDisconnectedUi()
         val defaults = defaultTikuSources()
         bindTikuSources(defaults)
@@ -455,6 +461,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.btnSaveAi.setOnClickListener { saveAiConfig() }
         binding.btnAddTikuSource.setOnClickListener { addTikuSourceEditor(newCustomTikuSource()) }
         binding.btnSaveTiku.setOnClickListener { saveTikuConfig() }
+        binding.btnHomeQuickSign.setOnClickListener { showTab(MainTab.FUNCTIONS) }
+        binding.btnHomeQuickBanks.setOnClickListener { showTab(MainTab.BANKS) }
+        binding.btnHomeQuickProfile.setOnClickListener { showTab(MainTab.PROFILE) }
 
         binding.switchAutoSignTarget.setOnCheckedChangeListener { _, isChecked ->
             if (locationLoading) return@setOnCheckedChangeListener
@@ -487,6 +496,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
 
         binding.btnJoinTg.setOnClickListener { openTelegramGroup() }
         binding.btnRenew.setOnClickListener { openTelegramGroup() }
+        binding.btnFeedback.setOnClickListener { openFeedbackCenter() }
 
         binding.btnActivate.setOnClickListener {
             val code = binding.editActivationCode.text.toString().trim()
@@ -699,7 +709,14 @@ class MainActivity : Activity(), App.ServiceStateListener {
         try {
             val prefs = service.getRemotePreferences(PREFS_SIGN)
             val signCode = prefs.getString(KEY_SIGN_CODE, "") ?: ""
-            val qrPayload = prefs.getString(KEY_QR_PAYLOAD, "") ?: ""
+            val legacyQrPayload = prefs.getString(KEY_QR_PAYLOAD, "") ?: ""
+            var h5QrPayload = prefs.getString(KEY_H5_QR_PAYLOAD, "") ?: ""
+            var nativeQrPayload = prefs.getString(KEY_NATIVE_QR_PAYLOAD, "") ?: ""
+            if (h5QrPayload.isBlank() && nativeQrPayload.isBlank() && legacyQrPayload.isNotBlank()) {
+                val (legacyH5, legacyNative) = splitLegacyQrPayload(legacyQrPayload)
+                h5QrPayload = legacyH5
+                nativeQrPayload = legacyNative
+            }
             val photoUri = prefs.getString(KEY_PHOTO_URI, "") ?: ""
             val lastMode = prefs.getString(KEY_SIGN_LAST_MODE, "") ?: ""
             val lastAction = prefs.getString(KEY_SIGN_LAST_ACTION, "") ?: ""
@@ -707,9 +724,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             val lastAt = prefs.getLong(KEY_SIGN_LAST_AT, 0L)
 
             binding.editSignCode.setText(signCode)
-            binding.editQrPayload.setText(qrPayload)
+            binding.editH5QrPayload.setText(h5QrPayload)
+            binding.editNativeQrPayload.setText(nativeQrPayload)
             binding.editPhotoUri.setText(photoUri)
-            updateSignAssistStatus(lastMode, lastAction, lastUrl, lastAt, signCode, qrPayload, photoUri)
+            updateSignAssistStatus(lastMode, lastAction, lastUrl, lastAt, signCode, h5QrPayload, nativeQrPayload, photoUri)
         } catch (_: Throwable) {
         }
     }
@@ -722,12 +740,15 @@ class MainActivity : Activity(), App.ServiceStateListener {
         }
         try {
             val signCode = binding.editSignCode.text.toString().trim()
-            val qrPayload = binding.editQrPayload.text.toString().trim()
+            val h5QrPayload = binding.editH5QrPayload.text.toString().trim()
+            val nativeQrPayload = binding.editNativeQrPayload.text.toString().trim()
             val photoUri = binding.editPhotoUri.text.toString().trim()
             service.getRemotePreferences(PREFS_SIGN)
                 .edit()
                 .putString(KEY_SIGN_CODE, signCode)
-                .putString(KEY_QR_PAYLOAD, qrPayload)
+                .putString(KEY_H5_QR_PAYLOAD, h5QrPayload)
+                .putString(KEY_NATIVE_QR_PAYLOAD, nativeQrPayload)
+                .remove(KEY_QR_PAYLOAD)
                 .putString(KEY_PHOTO_URI, photoUri)
                 .apply()
             loadSignAssistConfig(service)
@@ -743,13 +764,22 @@ class MainActivity : Activity(), App.ServiceStateListener {
         lastUrl: String,
         lastAt: Long,
         signCode: String,
-        qrPayload: String,
+        h5QrPayload: String,
+        nativeQrPayload: String,
         photoUri: String
     ) {
-        val configured = listOf(signCode, qrPayload, photoUri).count { it.isNotBlank() }
+        val configuredItems = mutableListOf<String>()
+        if (signCode.isNotBlank()) configuredItems += "口令"
+        if (h5QrPayload.isNotBlank()) configuredItems += "H5 二维码"
+        if (nativeQrPayload.isNotBlank()) configuredItems += "原生扫码"
+        if (photoUri.isNotBlank()) configuredItems += "拍照 URI"
+        val configured = configuredItems.size
+        val configuredSummary = if (configuredItems.isEmpty()) "未配置" else configuredItems.joinToString("、")
         binding.textSignAssistStatus.text = when {
             lastMode.isNotBlank() -> buildString {
-                append("已配置 $configured/3 项。最近识别到")
+                append("已配置 $configured/4 项（")
+                append(configuredSummary)
+                append("）。最近识别到")
                 append(lastMode)
                 if (lastAction.isNotBlank()) {
                     append("，")
@@ -765,8 +795,47 @@ class MainActivity : Activity(), App.ServiceStateListener {
                     append(lastUrl)
                 }
             }
-            configured > 0 -> "已配置 $configured/3 项辅助参数；H5 页会继续尝试提取二维码参数，原生扫码仅注入 signId/time 载荷。"
-            else -> "可预填手势口令、H5 二维码参数或原生 signId/time 载荷，以及拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
+            configured > 0 -> "已配置 $configured/4 项辅助参数（$configuredSummary）；H5 rcode 与原生 signId/time 会分开使用，互不串线。"
+            else -> "可分别预填手势口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
+        }
+    }
+
+    private fun splitLegacyQrPayload(rawPayload: String): Pair<String, String> {
+        val trimmed = rawPayload.trim()
+        if (trimmed.isEmpty()) return "" to ""
+        return if (normalizeNativeQrPayload(trimmed).isNotBlank()) {
+            "" to trimmed
+        } else {
+            trimmed to ""
+        }
+    }
+
+    private fun normalizeNativeQrPayload(rawPayload: String): String {
+        val trimmed = rawPayload.trim()
+        if (trimmed.isEmpty()) return ""
+        return try {
+            val json = JSONObject(trimmed)
+            if (json.optString("signId", "").isNotEmpty() && json.optString("time", "").isNotEmpty()) {
+                json.toString()
+            } else {
+                ""
+            }
+        } catch (_: Throwable) {
+            try {
+                val uri = Uri.parse(trimmed)
+                val signId = uri.getQueryParameter("signId")
+                val time = uri.getQueryParameter("time")
+                if (!signId.isNullOrEmpty() && !time.isNullOrEmpty()) {
+                    JSONObject().apply {
+                        put("signId", signId)
+                        put("time", time)
+                    }.toString()
+                } else {
+                    ""
+                }
+            } catch (_: Throwable) {
+                ""
+            }
         }
     }
 
@@ -900,7 +969,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 mode = inferTikuSourceMode(
                     nameInput.ifBlank { fallbackName },
                     baseUrl,
-                    views.modeButton.tag as? String
+                    selectedTikuSourceMode(views)
                 )
             )
         }
@@ -984,9 +1053,13 @@ class MainActivity : Activity(), App.ServiceStateListener {
         val views = TikuSourceViews(
             rootView = itemView,
             titleView = itemView.findViewById(R.id.text_source_title),
+            modeHintView = itemView.findViewById(R.id.text_source_mode_hint),
             enabledSwitch = itemView.findViewById(R.id.switch_source_enabled),
             nameEdit = itemView.findViewById(R.id.edit_source_name),
-            modeButton = itemView.findViewById(R.id.btn_source_mode),
+            autoModeButton = itemView.findViewById(R.id.btn_source_mode_auto),
+            lemtkModeButton = itemView.findViewById(R.id.btn_source_mode_lemtk),
+            adapterModeButton = itemView.findViewById(R.id.btn_source_mode_adapter),
+            zxseekModeButton = itemView.findViewById(R.id.btn_source_mode_zxseek),
             urlEdit = itemView.findViewById(R.id.edit_source_url),
             tokenEdit = itemView.findViewById(R.id.edit_source_token),
             quickFillButton = itemView.findViewById(R.id.btn_source_quick_fill),
@@ -997,7 +1070,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
         applyTikuSourceMode(views, source.mode)
         views.urlEdit.setText(source.baseUrl)
         views.tokenEdit.setText(source.token)
-        views.modeButton.setOnClickListener { openTikuSourceModeDialog(views) }
+        modeButtonPairs(views).forEach { (button, mode) ->
+            button.setOnClickListener { applyTikuSourceMode(views, mode) }
+        }
         views.quickFillButton.setOnClickListener {
             applyTikuSourceMode(views, SOURCE_MODE_ZXSEEK)
             views.urlEdit.setText(ZXSEEK_DEFAULT_URL)
@@ -1075,25 +1150,36 @@ class MainActivity : Activity(), App.ServiceStateListener {
             || name.contains("wkexam")
     }
 
-    private fun openTikuSourceModeDialog(views: TikuSourceViews) {
-        val modes = arrayOf(SOURCE_MODE_AUTO, SOURCE_MODE_LEMTK, SOURCE_MODE_ADAPTER, SOURCE_MODE_ZXSEEK)
-        val labels = modes.map(::tikuSourceModeLabel).toTypedArray()
-        val currentMode = normalizeTikuSourceMode(views.modeButton.tag as? String)
-        val checkedIndex = modes.indexOf(currentMode).coerceAtLeast(0)
-        AlertDialog.Builder(this)
-            .setTitle("选择题库协议")
-            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
-                applyTikuSourceMode(views, modes[which])
-                dialog.dismiss()
-            }
-            .setNegativeButton("取消", null)
-            .show()
+    private fun modeButtonPairs(views: TikuSourceViews): List<Pair<Button, String>> {
+        return listOf(
+            views.autoModeButton to SOURCE_MODE_AUTO,
+            views.lemtkModeButton to SOURCE_MODE_LEMTK,
+            views.adapterModeButton to SOURCE_MODE_ADAPTER,
+            views.zxseekModeButton to SOURCE_MODE_ZXSEEK
+        )
+    }
+
+    private fun selectedTikuSourceMode(views: TikuSourceViews): String {
+        return modeButtonPairs(views)
+            .firstOrNull { it.first.isSelected }
+            ?.second
+            ?: SOURCE_MODE_AUTO
     }
 
     private fun applyTikuSourceMode(views: TikuSourceViews, mode: String?) {
         val normalized = normalizeTikuSourceMode(mode)
-        views.modeButton.tag = normalized
-        views.modeButton.text = "协议：${tikuSourceModeLabel(normalized)}"
+        modeButtonPairs(views).forEach { (button, value) ->
+            val active = value == normalized
+            button.isSelected = active
+            button.setBackgroundResource(if (active) R.drawable.tiku_mode_chip_active else R.drawable.tiku_mode_chip_inactive)
+            button.setTextColor(if (active) Color.WHITE else getColor(R.color.ios_label))
+        }
+        views.modeHintView.text = when (normalized) {
+            SOURCE_MODE_LEMTK -> "按 LemTk 兼容协议请求，根地址即可；Token 可留空。"
+            SOURCE_MODE_ADAPTER -> "按 tikuAdapter 兼容接口请求，Token 栏可填写完整查询参数。"
+            SOURCE_MODE_ZXSEEK -> "按 ZXSeek / wkexam 接口请求，建议直接填写 API 地址并在下方填 token。"
+            else -> "根据名称和 URL 自动识别协议，适合混合兼容节点。"
+        }
         views.tokenEdit.hint = when (normalized) {
             SOURCE_MODE_LEMTK -> "Token（LemTk 可留空）"
             SOURCE_MODE_ADAPTER -> "查询参数（如 token=xxx&v=1）"
@@ -1158,7 +1244,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
             customCount > 0 -> "题库 已配置"
             else -> "题库 默认兜底"
         }
-        binding.homeBankSummary.text = "已配置 $enabledCount 个启用题库，$customCount 个兼容节点、适配器或 zxseek 接口可用，${if (cacheEnabled) "缓存已开启" else "缓存已关闭"}。"
+        binding.homeBankSummary.text = "已配置 $enabledCount 个启用题库，$customCount 个兼容节点可用；协议可在卡片内直接切换，${if (cacheEnabled) "缓存已开启" else "缓存已关闭"}。"
     }
 
     private fun updateAiSummary(hasOpenAi: Boolean, hasGemini: Boolean) {
@@ -1177,10 +1263,18 @@ class MainActivity : Activity(), App.ServiceStateListener {
     }
 
     private fun openTelegramGroup() {
+        openExternalUrl(TG_GROUP_URL, "无法打开 Telegram 链接")
+    }
+
+    private fun openFeedbackCenter() {
+        openExternalUrl(PUBLIC_FEEDBACK_URL, "无法打开反馈页面")
+    }
+
+    private fun openExternalUrl(url: String, errorMessage: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TG_GROUP_URL)))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (_: Throwable) {
-            Toast.makeText(this, "无法打开 Telegram 链接", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1355,11 +1449,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
             .setMessage(msg)
             .setPositiveButton("前往更新") { _, _ ->
                 if (downloadUrl.isNotEmpty()) {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
-                    } catch (_: Throwable) {
-                        Toast.makeText(this, "无法打开下载链接", Toast.LENGTH_SHORT).show()
-                    }
+                    openExternalUrl(downloadUrl, "无法打开下载链接")
                 }
             }
             .setCancelable(false)

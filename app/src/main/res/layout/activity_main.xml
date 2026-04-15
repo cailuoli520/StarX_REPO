@@ -185,6 +185,73 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:text="快速入口"
+                        android:textColor="@color/ios_label"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="把常用动作直接放回首页，少走一层导航。签到配置、题库源切换和许可管理都能一跳进入。"
+                        android:textColor="@color/ios_secondary_label"
+                        android:textSize="13sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btn_home_quick_sign"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:background="@drawable/btn_primary_bg"
+                            android:text="签到工作台"
+                            android:textAllCaps="false"
+                            android:textColor="@android:color/white" />
+
+                        <Space
+                            android:layout_width="12dp"
+                            android:layout_height="1dp" />
+
+                        <Button
+                            android:id="@+id/btn_home_quick_banks"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:background="@drawable/btn_map_secondary"
+                            android:text="题库源面板"
+                            android:textAllCaps="false"
+                            android:textColor="@android:color/white" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btn_home_quick_profile"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:background="@drawable/btn_map_secondary"
+                        android:text="许可与反馈"
+                        android:textAllCaps="false"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:orientation="vertical"
+                    android:background="@drawable/card_bg"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
                         android:text="框架与作用域"
                         android:textColor="@color/ios_label"
                         android:textSize="18sp"
@@ -464,7 +531,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
                         android:lineSpacingExtra="3dp"
-                        android:text="支持手势口令、H5 二维码参数与拍照签到图片 URI。原生扫码仅支持 signId/time JSON 或带这两个参数的 URL；H5 页面里的 rcode 仍会自动尝试提取。"
+                        android:text="支持手势口令、H5 二维码参数与拍照签到图片 URI。原生扫码仅支持 signId/time JSON 或带这两个参数的 URL；现在 H5 与原生扫码可分别独立保存。"
                         android:textColor="@color/ios_secondary_label"
                         android:textSize="13sp" />
 
@@ -474,7 +541,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
                         android:lineSpacingExtra="3dp"
-                        android:text="进入签到页后会自动识别手势、签到码、H5 二维码参数和拍照签到模式；原生扫码只会注入 signId/time。"
+                        android:text="进入签到页后会自动识别手势、签到码、H5 二维码参数和拍照签到模式；原生扫码只会读取独立的 signId/time 载荷。"
                         android:textColor="@color/ios_secondary_label"
                         android:textSize="13sp" />
 
@@ -489,18 +556,67 @@
                         android:textColor="@color/ios_label"
                         android:textColorHint="@color/ios_tertiary_label" />
 
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:text="H5 二维码参数"
+                        android:textColor="@color/ios_label"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
                     <EditText
-                        android:id="@+id/edit_qr_payload"
+                        android:id="@+id/edit_h5_qr_payload"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
+                        android:layout_marginTop="8dp"
                         android:background="@drawable/ios_input_bg"
                         android:gravity="top|start"
-                        android:hint="H5 rcode，或原生 signId/time JSON / URL"
+                        android:hint="填写 rcode，或包含 rcode 的 URL / JSON"
                         android:minLines="2"
                         android:padding="14dp"
                         android:textColor="@color/ios_label"
                         android:textColorHint="@color/ios_tertiary_label" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="用于 H5 签到页；留空时仍会优先尝试页面自动提取。"
+                        android:textColor="@color/ios_secondary_label"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="原生扫码载荷"
+                        android:textColor="@color/ios_label"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <EditText
+                        android:id="@+id/edit_native_qr_payload"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/ios_input_bg"
+                        android:gravity="top|start"
+                        android:hint="填写 signId/time JSON，或带这两个参数的 URL"
+                        android:minLines="2"
+                        android:padding="14dp"
+                        android:textColor="@color/ios_label"
+                        android:textColorHint="@color/ios_tertiary_label" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="仅原生扫码页使用，不会再和 H5 字段共用同一份配置。"
+                        android:textColor="@color/ios_secondary_label"
+                        android:textSize="12sp" />
 
                     <EditText
                         android:id="@+id/edit_photo_uri"
@@ -561,7 +677,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
                         android:lineSpacingExtra="3dp"
-                        android:text="已预置柠檬推荐、柠檬官方与 zxseek / wkexam 接口，也兼容 tikuAdapter 标准接口。每个题库源都可手动选择协议类型；LemTk 可填根地址，adapter 若填根地址请把协议切到 tikuAdapter，zxseek 直接填 API 地址并在 Token 栏填写 token。"
+                        android:text="已预置柠檬推荐、柠檬官方与 zxseek / wkexam 接口，也兼容 tikuAdapter 标准接口。每张卡片内都能直接切换协议，不再额外弹窗；LemTk 可填根地址，adapter 若填根地址请把协议切到 tikuAdapter，zxseek 直接填 API 地址并在 Token 栏填写 token。"
                         android:textColor="@color/ios_secondary_label"
                         android:textSize="13sp" />
                 </LinearLayout>
@@ -579,9 +695,45 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
                     android:background="@drawable/btn_map_secondary"
-                    android:text="新增题库源"
+                    android:text="新增自定义题库源"
                     android:textAllCaps="false"
                     android:textColor="@color/ios_label" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:orientation="vertical"
+                    android:background="@drawable/card_bg"
+                    android:padding="20dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="支持与反馈"
+                        android:textColor="@color/ios_label"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="问题反馈和需求建议统一走公开仓库，方便跟踪状态、补充日志和查看修复排期。"
+                        android:textColor="@color/ios_secondary_label"
+                        android:textSize="13sp" />
+
+                    <Button
+                        android:id="@+id/btn_feedback"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:background="@drawable/btn_map_secondary"
+                        android:text="提交问题 / 需求反馈"
+                        android:textAllCaps="false"
+                        android:textColor="@android:color/white" />
+                </LinearLayout>
 
                 <LinearLayout
                     android:layout_width="match_parent"

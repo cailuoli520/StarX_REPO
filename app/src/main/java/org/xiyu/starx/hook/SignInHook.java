@@ -37,6 +37,8 @@ public class SignInHook {
         private static final String KEY_AUTO_SOURCE_URL = "auto_target_source_url";
         private static final String KEY_SIGN_CODE = "assist_sign_code";
         private static final String KEY_QR_PAYLOAD = "assist_qr_payload";
+        private static final String KEY_H5_QR_PAYLOAD = "assist_qr_h5_payload";
+        private static final String KEY_NATIVE_QR_PAYLOAD = "assist_qr_native_payload";
         private static final String KEY_PHOTO_URI = "assist_photo_uri";
         private static final String KEY_LAST_MODE = "assist_last_mode";
         private static final String KEY_LAST_ACTION = "assist_last_action";
@@ -805,8 +807,26 @@ public class SignInHook {
         return readStringPref(KEY_SIGN_CODE, "").trim();
     }
 
-    private String readConfiguredQrPayload() {
+    private String readLegacyQrPayload() {
         return readStringPref(KEY_QR_PAYLOAD, "").trim();
+    }
+
+    private String readConfiguredH5QrPayload() {
+        String directValue = readStringPref(KEY_H5_QR_PAYLOAD, "").trim();
+        if (!directValue.isEmpty()) {
+            return directValue;
+        }
+        String legacy = readLegacyQrPayload();
+        return normalizeQrJsonPayload(legacy).isEmpty() ? legacy : "";
+    }
+
+    private String readConfiguredNativeQrPayload() {
+        String directValue = readStringPref(KEY_NATIVE_QR_PAYLOAD, "").trim();
+        if (!directValue.isEmpty()) {
+            return directValue;
+        }
+        String legacy = readLegacyQrPayload();
+        return normalizeQrJsonPayload(legacy).isEmpty() ? "" : legacy;
     }
 
     private String readConfiguredPhotoUri() {
@@ -817,7 +837,7 @@ public class SignInHook {
         JSONObject config = new JSONObject();
         try {
             config.put("signCode", readConfiguredSignCode());
-            config.put("qrPayload", readConfiguredQrPayload());
+            config.put("qrPayload", readConfiguredH5QrPayload());
             config.put("autoSubmit", true);
         } catch (Throwable ignored) {
         }
@@ -913,7 +933,7 @@ public class SignInHook {
             }
             consumeQrPayload.setAccessible(true);
             module.hook(openScanner).intercept(chain -> {
-                String configuredPayload = readConfiguredQrPayload();
+                String configuredPayload = readConfiguredNativeQrPayload();
                 String payload = normalizeQrJsonPayload(configuredPayload);
                 if (payload.isEmpty()) {
                     if (!configuredPayload.isEmpty()) {

@@ -36,16 +36,98 @@
         android:textColor="@color/ios_label"
         android:textColorHint="@color/ios_tertiary_label" />
 
-    <Button
-        android:id="@+id/btn_source_mode"
-        android:layout_width="match_parent"
+    <TextView
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:background="@drawable/btn_map_secondary"
-        android:paddingHorizontal="16dp"
-        android:text="协议：自动识别"
-        android:textAllCaps="false"
-        android:textColor="@color/ios_label" />
+        android:text="协议切换"
+        android:textColor="@color/ios_label"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_source_mode_auto"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="自动"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_source_mode_lemtk"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="LemTk"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_source_mode_adapter"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="Adapter"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_source_mode_zxseek"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="ZXSeek"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/text_source_mode_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:lineSpacingExtra="3dp"
+        android:text="根据名称和 URL 自动识别接口类型。"
+        android:textColor="@color/ios_secondary_label"
+        android:textSize="12sp" />
 
     <EditText
         android:id="@+id/edit_source_url"
