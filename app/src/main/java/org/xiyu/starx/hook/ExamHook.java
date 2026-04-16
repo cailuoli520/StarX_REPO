@@ -10,6 +10,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JsPromptResult;
@@ -30,6 +31,7 @@ import org.xiyu.starx.util.SecureOverlay;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -50,9 +52,17 @@ import io.github.libxposed.api.XposedModule;
 public class ExamHook {
     private static final String CONFIG_PREFS = "config";
     private static final String KEY_EXAM_ENABLED = "hook_exam_enabled";
+    private static final String KEY_EXAM_TRIGGER = "hook_exam_trigger";
     private static final String PROMPT_BRIDGE_DEFAULT = "StarXBridgeV1";
-    private static final long PROMPT_QUERY_TIMEOUT_MS = 2600L;
-    private static final long PROMPT_IMAGE_QUERY_TIMEOUT_MS = 4200L;
+    private static final long PROMPT_QUERY_TIMEOUT_MS = 6500L;
+    private static final long PROMPT_IMAGE_QUERY_TIMEOUT_MS = 9000L;
+    private static final long JS_BRIDGE_QUERY_TIMEOUT_MS = 9000L;
+    private static final long JS_BRIDGE_IMAGE_QUERY_TIMEOUT_MS = 12000L;
+    private static final long STATUS_OVERLAY_DEFAULT_MS = 2200L;
+    private static final long VOLUME_COMBO_WINDOW_MS = 900L;
+    private static final String EXAM_TRIGGER_VOLUME_DOWN = "volume_down";
+    private static final String EXAM_TRIGGER_VOLUME_UP = "volume_up";
+    private static final String EXAM_TRIGGER_VOLUME_UP_DOWN = "volume_up_down";
     private static final String QUESTION_ROOT_SELECTORS = ".TiMu,.tiMu,.singleQuesId,[id^=\"question\"],.questionLi,.Cy_TItle,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.mark_name,.question-wrap,.topic-item,.question-list li";
     private static final String QUESTION_OPTION_SELECTORS = "li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.radio_option,.checkbox_option,.optionUl li,.answerBg .radioItemCont,.answerBg .checkItemCont,.optionItem,.questionLi .optionUl li,[class*=option] li,[class*=Option] li";
     private static final String[] EXAM_URL_HINTS = new String[]{
@@ -81,6 +91,8 @@ public class ExamHook {
     private final java.util.concurrent.ExecutorService promptExecutor = java.util.concurrent.Executors.newCachedThreadPool();
     private final java.util.Set<Integer> registeredWebViews = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<Class<?>> hookedPromptClients = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Map<Integer, WeakReference<WebView>> activeExamWebViews = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile long lastVolumeUpPressedAt = 0L;
 
     /**
      * JS 反切屏检测脚本 — 在考试页面加载时注入
@@ -205,15 +217,17 @@ public class ExamHook {
             "(function(){" +
             "if(window.__starxPromptBridgeReady)return 'ready';" +
             "window.__starxPromptBridgeReady=true;" +
+            "function nativeBridge(){try{return window._starxNative||null;}catch(e){return null;}}" +
             "function call(method,payload){" +
             "try{" +
             "return prompt(JSON.stringify({method:method,payload:payload||{}}),'StarXBridgeV1')||'';" +
             "}catch(e){return '';}}" +
             "var bridge=window._starx||{};" +
-            "bridge.queryAnswer=function(question){return call('queryAnswer',{question:question});};" +
-            "bridge.queryAnswerWithOptions=function(question,type,options){return call('queryAnswerWithOptions',{question:question,type:type,options:options});};" +
-            "bridge.queryAnswerWithImages=function(question,type,options,imageUrls){return call('queryAnswerWithImages',{question:question,type:type,options:options,imageUrls:imageUrls});};" +
-            "bridge.log=function(msg){call('log',{msg:String(msg)});};" +
+            "bridge.queryAnswer=function(question){try{var n=nativeBridge();if(n&&n.queryAnswer)return n.queryAnswer(question)||'';}catch(e){}return call('queryAnswer',{question:question});};" +
+            "bridge.queryAnswerWithOptions=function(question,type,options){try{var n=nativeBridge();if(n&&n.queryAnswerWithOptions)return n.queryAnswerWithOptions(question,type,options)||'';}catch(e){}return call('queryAnswerWithOptions',{question:question,type:type,options:options});};" +
+            "bridge.queryAnswerWithImages=function(question,type,options,imageUrls){try{var n=nativeBridge();if(n&&n.queryAnswerWithImages)return n.queryAnswerWithImages(question,type,options,imageUrls)||'';}catch(e){}return call('queryAnswerWithImages',{question:question,type:type,options:options,imageUrls:imageUrls});};" +
+            "bridge.notifyStatus=function(message,durationMs){var ms=durationMs||0;try{var n=nativeBridge();if(n&&n.notifyStatus){n.notifyStatus(String(message||''),ms);return '';}}catch(e){}call('notifyStatus',{message:String(message||''),durationMs:ms});return '';};" +
+            "bridge.log=function(msg){try{var n=nativeBridge();if(n&&n.log){n.log(String(msg||''));return '';}}catch(e){}call('log',{msg:String(msg)});return '';};" +
             "window._starx=bridge;" +
             "return 'installed';" +
             "})()";
@@ -289,6 +303,7 @@ public class ExamHook {
         hookVideoTestAutoAnswer();
         hookPromptBridge();
         hookWebViewExam();
+        hookHardwareSearchTrigger();
         hookOcrResult();
         hookActivityQuestion();
         hookNetworkAnswerExtract();
@@ -470,6 +485,7 @@ public class ExamHook {
         int id = System.identityHashCode(wv);
         if (registeredWebViews.add(id)) {
             wv.addJavascriptInterface(new StarXJsBridge(wv), "_starx");
+            wv.addJavascriptInterface(new StarXJsBridge(wv), "_starxNative");
             Logx.i("ExamHook: bridge registered on WebView@" + Integer.toHexString(id));
         }
     }
@@ -563,6 +579,9 @@ public class ExamHook {
                             payload.optString("options", null),
                             payload.optString("imageUrls", null),
                             PROMPT_IMAGE_QUERY_TIMEOUT_MS);
+                    break;
+                case "notifyStatus":
+                    notifyStatus(webView, payload.optString("message", ""), payload.optInt("durationMs", 0));
                     break;
                 case "log":
                     Logx.i("ExamHook[JS]: " + payload.optString("msg", ""));
@@ -660,9 +679,10 @@ public class ExamHook {
                                     public void onFailed() {
                                         Logx.w("ExamHook: OCR search found no answer");
                                         if (context != null) {
-                                            mainHandler.post(() -> android.widget.Toast.makeText(
-                                                    context, "[隐私] OCR搜题未找到答案",
-                                                    android.widget.Toast.LENGTH_SHORT).show());
+                                            mainHandler.post(() -> showStatusOverlay(
+                                                    context,
+                                                    "OCR 搜题未找到答案",
+                                                    STATUS_OVERLAY_DEFAULT_MS));
                                         }
                                     }
                                 });
@@ -738,16 +758,13 @@ public class ExamHook {
 
     private void injectStarXScript(WebView webView) {
         if (webView == null || !isExamEnabled()) return;
+        trackActiveExamWebView(webView);
         try {
             // 首先注入反切屏检测 JS — 必须在考试 JS 之前
             webView.evaluateJavascript(VISIBILITY_BYPASS_JS, null);
             Logx.i("ExamHook: visibility bypass JS injected");
         } catch (Throwable t) {
             Logx.w("ExamHook: visibility bypass inject failed: " + t.getMessage());
-        }
-        if (jsInject == null || jsInject.isEmpty()) {
-            Logx.w("ExamHook: no JS inject script (license?)");
-            return;
         }
         try {
             ensureBridgeRegistered(webView);
@@ -772,8 +789,6 @@ public class ExamHook {
                     Logx.i("ExamHook: main search ui inject: " + value));
             webView.evaluateJavascript(QUERY_MONITOR_JS, value ->
                     Logx.i("ExamHook: query monitor injected: " + value));
-                webView.evaluateJavascript(SEARCH_BUTTON_LAYOUT_FIX_JS, value ->
-                    Logx.i("ExamHook: search button layout fix injected: " + value));
 
             // 向所有同源 iframe 注入桥接；若 iframe 内实际有题，则恢复独立搜题按钮
             String iframeInjectJs =
@@ -789,7 +804,7 @@ public class ExamHook {
                 "    var parent=(doc.head||doc.documentElement||doc.body);" +
                 "    if(!doc||!parent)continue;" +
                 "    var bridge=doc.createElement('script');" +
-                "    bridge.textContent=" + jsonEscapeForJs(PROMPT_BRIDGE_BOOTSTRAP + ";" + QUERY_UPGRADE_SHIM + ";" + QUERY_MONITOR_JS + ";" + SEARCH_BUTTON_LAYOUT_FIX_JS) + ";" +
+                "    bridge.textContent=" + jsonEscapeForJs(PROMPT_BRIDGE_BOOTSTRAP + ";" + QUERY_UPGRADE_SHIM + ";" + QUERY_MONITOR_JS) + ";" +
                 "    parent.appendChild(bridge);" +
                 "    count++;" +
                 "    var href='';" +
@@ -824,7 +839,7 @@ public class ExamHook {
 
         @android.webkit.JavascriptInterface
         public String queryAnswer(String question) {
-            return queryAnswerWithOptionsInternal(webView, question, -1, null, 20000);
+            return queryAnswerWithOptionsInternal(webView, question, -1, null, JS_BRIDGE_QUERY_TIMEOUT_MS);
         }
 
         /**
@@ -836,11 +851,16 @@ public class ExamHook {
          */
         @android.webkit.JavascriptInterface
         public String queryAnswerWithImages(String question, int type, String options, String imageUrls) {
-            return queryAnswerWithImagesInternal(webView, question, type, options, imageUrls, 25000);
+            return queryAnswerWithImagesInternal(webView, question, type, options, imageUrls, JS_BRIDGE_IMAGE_QUERY_TIMEOUT_MS);
         }
         @android.webkit.JavascriptInterface
         public String queryAnswerWithOptions(String question, int type, String options) {
-            return queryAnswerWithOptionsInternal(webView, question, type, options, 20000);
+            return queryAnswerWithOptionsInternal(webView, question, type, options, JS_BRIDGE_QUERY_TIMEOUT_MS);
+        }
+
+        @android.webkit.JavascriptInterface
+        public void notifyStatus(String message, int durationMs) {
+            ExamHook.this.notifyStatus(webView, message, durationMs);
         }
 
         @android.webkit.JavascriptInterface
@@ -866,10 +886,6 @@ public class ExamHook {
         String preview = q.length() > 60 ? q.substring(0, 60) : q;
         boolean hasImages = imageUrls != null && !imageUrls.trim().isEmpty();
         Logx.i("ExamHook[JS→Java]: " + preview + (hasImages ? " [+img]" : ""));
-        mainHandler.post(() -> android.widget.Toast.makeText(
-                webView.getContext(),
-                hasImages ? "[隐私] 正在识别图片并搜题..." : "[隐私] 正在搜题...",
-                android.widget.Toast.LENGTH_SHORT).show());
 
         java.util.List<String> imgList = null;
         if (hasImages) {
@@ -884,14 +900,8 @@ public class ExamHook {
         AnswerProvider.Result r = answerProvider.queryWithTimeout(q, type, options, imgList, timeoutMs);
         if (r != null) {
             Logx.i("★ 答案[" + r.source + "] => " + r.answer);
-            final String src = r.source;
-            final String answer = r.answer;
-            mainHandler.post(() -> showAnswerOverlay(webView.getContext(),
-                    "[隐私 · " + src + "] " + answer));
             return r.answer;
         }
-        mainHandler.post(() -> android.widget.Toast.makeText(
-                webView.getContext(), "[隐私] 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
         return "";
     }
 
@@ -911,20 +921,11 @@ public class ExamHook {
             question = question.trim();
             String preview = question.length() > 60 ? question.substring(0, 60) : question;
             Logx.i("ExamHook[JS→Java]: " + preview);
-            mainHandler.post(() -> android.widget.Toast.makeText(
-                    webView.getContext(), "[隐私] 正在搜题...", android.widget.Toast.LENGTH_SHORT).show());
                 AnswerProvider.Result r = answerProvider.queryWithTimeout(question, type, options, timeoutMs);
             if (r != null) {
                 Logx.i("★ 答案[" + r.source + "] => " + r.answer);
-                final String src = r.source;
-                final String answer = r.answer;
-                // 在安全浮窗中显示答案 (录屏/截屏不可见)
-                mainHandler.post(() -> showAnswerOverlay(webView.getContext(),
-                        "[隐私 · " + src + "] " + answer));
                 return r.answer;
             }
-            mainHandler.post(() -> android.widget.Toast.makeText(
-                    webView.getContext(), "[隐私] 未找到答案", android.widget.Toast.LENGTH_SHORT).show());
             return "";
         }
 
@@ -972,6 +973,8 @@ public class ExamHook {
     // =======================================================================
 
     private View answerOverlayView;
+    private View statusOverlayView;
+    private Runnable statusOverlayDismissRunnable;
 
     /**
      * 在安全浮窗中显示答案文本。
@@ -981,8 +984,7 @@ public class ExamHook {
     private void showAnswerOverlay(Context context, String text) {
         Activity activity = SecureOverlay.asActivity(context);
         if (activity == null || activity.isFinishing()) {
-            // 降级为 Toast
-            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show();
+            Logx.w("ExamHook: skip insecure answer overlay, activity unavailable");
             return;
         }
 
@@ -1037,7 +1039,73 @@ public class ExamHook {
             Logx.i("ExamHook: answer overlay shown (secure)");
         } catch (Throwable t) {
             Logx.w("ExamHook: secure overlay failed: " + t.getMessage());
-            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showStatusOverlay(Context context, String text, long durationMs) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        Activity activity = SecureOverlay.asActivity(context);
+        if (activity == null || activity.isFinishing()) {
+            Logx.w("ExamHook: skip insecure status overlay, activity unavailable: " + text);
+            return;
+        }
+
+        if (statusOverlayDismissRunnable != null) {
+            mainHandler.removeCallbacks(statusOverlayDismissRunnable);
+            statusOverlayDismissRunnable = null;
+        }
+        if (statusOverlayView != null) {
+            try {
+                SecureOverlay.removeSecureView(activity, statusOverlayView);
+            } catch (Throwable ignored) {}
+            statusOverlayView = null;
+        }
+
+        try {
+            int dp8 = dpToPx(context, 8);
+            int dp12 = dpToPx(context, 12);
+            String displayText = text.startsWith("[隐私]") ? text : "[隐私] " + text;
+
+            TextView tv = new TextView(context);
+            tv.setText(displayText);
+            tv.setTextColor(Color.WHITE);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.argb(228, 18, 24, 38));
+            bg.setCornerRadius(dpToPx(context, 18));
+            tv.setBackground(bg);
+            tv.setPadding(dp12, dp8, dp12, dp8);
+            tv.setMaxWidth(dpToPx(context, 300));
+
+            final Activity act = activity;
+            final TextView overlay = tv;
+            tv.setOnClickListener(v -> {
+                try {
+                    SecureOverlay.removeSecureView(act, overlay);
+                } catch (Throwable ignored) {}
+                if (statusOverlayView == overlay) {
+                    statusOverlayView = null;
+                }
+            });
+
+            SecureOverlay.addSecureView(activity, tv,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dpToPx(context, 132));
+            statusOverlayView = tv;
+
+            long safeDurationMs = durationMs > 0L ? durationMs : STATUS_OVERLAY_DEFAULT_MS;
+            statusOverlayDismissRunnable = () -> {
+                if (statusOverlayView == overlay) {
+                    try {
+                        SecureOverlay.removeSecureView(act, overlay);
+                    } catch (Throwable ignored) {}
+                    statusOverlayView = null;
+                }
+            };
+            mainHandler.postDelayed(statusOverlayDismissRunnable, safeDurationMs);
+        } catch (Throwable t) {
+            Logx.w("ExamHook: secure status overlay failed: " + t.getMessage());
         }
     }
 
@@ -1195,9 +1263,141 @@ public class ExamHook {
 
     // JS 注入脚本由服务端下发，存储在 jsInject 字段
 
+    private void hookHardwareSearchTrigger() {
+        try {
+            Method dispatchKeyEvent = Activity.class.getDeclaredMethod("dispatchKeyEvent", KeyEvent.class);
+            module.hook(dispatchKeyEvent).intercept(chain -> {
+                if (!isExamEnabled()) {
+                    return chain.proceed();
+                }
+                KeyEvent event = (KeyEvent) chain.getArg(0);
+                if (shouldConsumeHardwareSearch(event)) {
+                    return true;
+                }
+                return chain.proceed();
+            });
+            Logx.i("ExamHook: hardware search trigger ready");
+        } catch (Throwable t) {
+            Logx.w("ExamHook: hardware search trigger hook failed: " + t.getMessage());
+        }
+    }
+
+    private boolean shouldConsumeHardwareSearch(KeyEvent event) {
+        if (event == null || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) {
+            return false;
+        }
+        String mode = readExamTriggerMode();
+        int keyCode = event.getKeyCode();
+        long now = System.currentTimeMillis();
+
+        if (EXAM_TRIGGER_VOLUME_UP_DOWN.equals(mode)) {
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                if (pickActiveExamWebView() == null) {
+                    return false;
+                }
+                lastVolumeUpPressedAt = now;
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                boolean matched = lastVolumeUpPressedAt > 0L
+                        && now - lastVolumeUpPressedAt <= VOLUME_COMBO_WINDOW_MS;
+                lastVolumeUpPressedAt = 0L;
+                return matched && triggerHardwareSearch();
+            }
+            lastVolumeUpPressedAt = 0L;
+            return false;
+        }
+
+        lastVolumeUpPressedAt = 0L;
+        if (EXAM_TRIGGER_VOLUME_UP.equals(mode)) {
+            return keyCode == KeyEvent.KEYCODE_VOLUME_UP && triggerHardwareSearch();
+        }
+        return keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && triggerHardwareSearch();
+    }
+
+    private String readExamTriggerMode() {
+        try {
+            var prefs = module.getRemotePreferences(CONFIG_PREFS);
+            String raw = prefs.getString(KEY_EXAM_TRIGGER, EXAM_TRIGGER_VOLUME_DOWN);
+            if (EXAM_TRIGGER_VOLUME_UP.equals(raw) || EXAM_TRIGGER_VOLUME_UP_DOWN.equals(raw)) {
+                return raw;
+            }
+        } catch (Throwable t) {
+            Logx.w("ExamHook: read trigger mode failed: " + t.getMessage());
+        }
+        return EXAM_TRIGGER_VOLUME_DOWN;
+    }
+
+    private void trackActiveExamWebView(WebView webView) {
+        if (webView == null) {
+            return;
+        }
+        activeExamWebViews.put(System.identityHashCode(webView), new WeakReference<>(webView));
+    }
+
+    private WebView pickActiveExamWebView() {
+        WebView fallback = null;
+        java.util.List<Integer> staleIds = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<Integer, WeakReference<WebView>> entry : activeExamWebViews.entrySet()) {
+            WebView webView = entry.getValue().get();
+            if (webView == null) {
+                staleIds.add(entry.getKey());
+                continue;
+            }
+            if (webView.getWindowToken() != null && webView.isShown()) {
+                return webView;
+            }
+            if (fallback == null && webView.getWindowToken() != null) {
+                fallback = webView;
+            }
+        }
+        for (Integer staleId : staleIds) {
+            activeExamWebViews.remove(staleId);
+        }
+        return fallback;
+    }
+
+    private boolean triggerHardwareSearch() {
+        WebView webView = pickActiveExamWebView();
+        if (webView == null) {
+            return false;
+        }
+        mainHandler.post(() -> {
+            try {
+                webView.evaluateJavascript(
+                        "(function(){try{return window.__starxTriggerSearch&&window.__starxTriggerSearch()||'missing';}catch(e){return 'err:'+e.message;}})()",
+                        value -> Logx.i("ExamHook: hardware search trigger => " + value));
+            } catch (Throwable t) {
+                Logx.w("ExamHook: hardware search trigger failed: " + t.getMessage());
+            }
+        });
+        return true;
+    }
+
+    private void notifyStatus(WebView webView, String message, int durationMs) {
+        if (webView == null || message == null || message.trim().isEmpty()) {
+            return;
+        }
+        long safeDurationMs = durationMs > 0 ? durationMs : STATUS_OVERLAY_DEFAULT_MS;
+        mainHandler.post(() -> showStatusOverlay(webView.getContext(), message.trim(), safeDurationMs));
+    }
+
     private static String normalizeInjectedUiScript(String script) {
-        if (script == null || script.isEmpty()) return script;
+        if (script == null || script.isEmpty()) return "";
         return script
+                .replace("var btn=document.createElement('div');", "var btn={innerHTML:'',style:{pointerEvents:'auto',bottom:'0px'}};")
+                .replace("document.body.appendChild(btn);", "")
+                .replace("var toast=document.createElement('div');", "var toast={style:{display:'none',bottom:'0px'},textContent:''};")
+                .replace("document.body.appendChild(toast);", "")
+                .replace(
+                        "function showToast(m,ms){toast.textContent='【隐私】'+m;toast.style.display='block';\n  setTimeout(function(){toast.style.display='none';},ms||3000);}",
+                        "function showToast(m,ms){try{window._starx&&window._starx.notifyStatus&&window._starx.notifyStatus(String(m||''),ms||0);}catch(e){try{window._starx&&window._starx.log&&window._starx.log('status:'+m);}catch(_e){}}}")
+                .replace(
+                        "ans.indexOf(q.options[i].text.substring(2))>=0",
+                        "(normalizeOptionText(q.options[i].text)&&ans.indexOf(normalizeOptionText(q.options[i].text))>=0)")
+                .replace(
+                        "btn.onclick=function(){btn.innerHTML='\\uD83D\\uDD12 \\u641C\\u9898\\u4E2D';btn.style.pointerEvents='none';doSearch();};",
+                        "window.__starxHasSearchTarget=function(){try{return getQuestions().length?1:0;}catch(e){return 0;}};\nbtn.onclick=function(){return window.__starxTriggerSearch();};\nwindow.__starxTriggerSearch=function(){btn.innerHTML='搜题中';btn.style.pointerEvents='none';return doSearch();};")
                 .replace("🔍 私密搜题", "搜题")
                 .replace("🔍私密搜题", "搜题")
                 .replace("🔍 搜题", "搜题")

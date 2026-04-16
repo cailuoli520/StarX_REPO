@@ -32,7 +32,7 @@ public class AnswerProvider {
     private AiApi geminiApi;
     private boolean cacheEnabled = true;
     private final ExecutorService executor = new ThreadPoolExecutor(
-            2, 4, 30, TimeUnit.SECONDS, new LinkedBlockingQueue<>(16));
+            4, 8, 60, TimeUnit.SECONDS, new LinkedBlockingQueue<>(48));
 
     public void setOpenAI(String apiKey, String baseUrl, String model) {
         if (apiKey != null && !apiKey.trim().isEmpty()) {

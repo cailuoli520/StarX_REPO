@@ -5,6 +5,7 @@ import org.xiyu.starx.util.Logx;
 import org.xiyu.starx.util.QuestionCache;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -28,6 +29,11 @@ public class TikuApi {
     private static final int TIMEOUT_MS = 5000;
     private static final String ADAPTER_SEARCH_PATH = "/adapter-service/search";
     private static final String ZXSEEK_DEFAULT_API = "https://api.wkexam.com/api/";
+    private static final String MODE_CUSTOM_GET = "custom_get";
+    private static final String MODE_CUSTOM_POST_JSON = "custom_post_json";
+    private static final String PLACEMENT_QUERY = "query";
+    private static final String PLACEMENT_HEADER = "header";
+    private static final String PLACEMENT_BODY = "body";
 
     public static void init(List<String> endpoints) {
         init(endpoints, null);
@@ -93,6 +99,9 @@ public class TikuApi {
     }
 
     private static String querySource(SourceConfig source, String question, int type, String mappedType, String options) throws Exception {
+        if (isCustomTemplateSource(source)) {
+            return queryCustomTemplateSource(source, question, type, mappedType, options);
+        }
         if (isZxSeekCompatibleSource(source)) {
             return queryZxSeekSource(source, question);
         }
@@ -100,6 +109,291 @@ public class TikuApi {
             return queryAdapterSource(source, question, type, options);
         }
         return LemTkApi.queryWithConfig(source.baseUrl, source.token, question, mappedType, options);
+    }
+
+    private static boolean isCustomTemplateSource(SourceConfig source) {
+        if (source == null) return false;
+        String mode = source.mode != null ? source.mode.trim().toLowerCase(Locale.ROOT) : "";
+        return MODE_CUSTOM_GET.equals(mode) || MODE_CUSTOM_POST_JSON.equals(mode);
+    }
+
+    private static String queryCustomTemplateSource(SourceConfig source, String question, int type,
+                                                    String mappedType, String options) throws Exception {
+        String mode = source.mode != null ? source.mode.trim().toLowerCase(Locale.ROOT) : "";
+        boolean postJson = MODE_CUSTOM_POST_JSON.equals(mode);
+        String urlStr = buildCustomTemplateUrl(source, question, type, mappedType, options);
+        URL url = new URL(urlStr);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        ActiveConnection.set(conn);
+        try {
+            conn.setRequestMethod(postJson ? "POST" : "GET");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("User-Agent", "StarX/1.2");
+
+            for (TemplateParamConfig param : source.templateParams) {
+                if (param == null || !PLACEMENT_HEADER.equals(param.placement) || param.key.isEmpty()) {
+                    continue;
+                }
+                conn.setRequestProperty(param.key, resolveTemplateText(param.value, question, type, mappedType, options));
+            }
+
+            if (postJson) {
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                JSONObject body = buildCustomTemplateBody(source, question, type, mappedType, options);
+                byte[] payload = body.toString().getBytes("UTF-8");
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(payload);
+                }
+            }
+
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                Logx.w("TikuApi(custom): HTTP " + code + " for " + urlStr);
+                return null;
+            }
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+            reader.close();
+            return parseCustomTemplateResponse(sb.toString(), source.answerPath);
+        } finally {
+            ActiveConnection.clear();
+            conn.disconnect();
+        }
+    }
+
+    private static String buildCustomTemplateUrl(SourceConfig source, String question, int type,
+                                                 String mappedType, String options) throws Exception {
+        String normalized = source.baseUrl == null ? "" : source.baseUrl.trim();
+        StringBuilder url = new StringBuilder(normalized);
+        boolean hasQuery = normalized.contains("?");
+        boolean hasTrailingSeparator = normalized.endsWith("?") || normalized.endsWith("&");
+        for (TemplateParamConfig param : source.templateParams) {
+            if (param == null || !PLACEMENT_QUERY.equals(param.placement) || param.key.isEmpty()) {
+                continue;
+            }
+            String value = resolveTemplateText(param.value, question, type, mappedType, options);
+            if (!hasQuery) {
+                url.append('?');
+                hasQuery = true;
+                hasTrailingSeparator = true;
+            } else if (!hasTrailingSeparator) {
+                url.append('&');
+                hasTrailingSeparator = true;
+            }
+            url.append(URLEncoder.encode(param.key, "UTF-8"))
+                    .append('=')
+                    .append(URLEncoder.encode(value, "UTF-8"));
+            hasTrailingSeparator = false;
+        }
+        return url.toString();
+    }
+
+    private static JSONObject buildCustomTemplateBody(SourceConfig source, String question, int type,
+                                                      String mappedType, String options) throws Exception {
+        JSONObject body = new JSONObject();
+        for (TemplateParamConfig param : source.templateParams) {
+            if (param == null || !PLACEMENT_BODY.equals(param.placement) || param.key.isEmpty()) {
+                continue;
+            }
+            body.put(param.key, resolveTemplateBodyValue(param.value, question, type, mappedType, options));
+        }
+        return body;
+    }
+
+    private static String resolveTemplateText(String template, String question, int type,
+                                              String mappedType, String options) {
+        String resolved = template == null ? "" : template;
+        resolved = resolved.replace("{{question}}", question != null ? question : "");
+        resolved = resolved.replace("{{type}}", type >= 0 ? String.valueOf(type) : "");
+        resolved = resolved.replace("{{mapped_type}}", mappedType != null ? mappedType : "");
+        resolved = resolved.replace("{{options}}", options != null ? options : "");
+        resolved = resolved.replace("{{options_json}}", buildAdapterOptionArray(options).toString());
+        return resolved.trim();
+    }
+
+    private static Object resolveTemplateBodyValue(String template, String question, int type,
+                                                   String mappedType, String options) {
+        String trimmed = template == null ? "" : template.trim();
+        if ("{{options_json}}".equals(trimmed)) {
+            return buildAdapterOptionArray(options);
+        }
+        if ("{{type}}".equals(trimmed) && type >= 0) {
+            return type;
+        }
+        if ("{{mapped_type}}".equals(trimmed) && mappedType != null && !mappedType.isEmpty()) {
+            return mappedType;
+        }
+        String resolved = resolveTemplateText(template, question, type, mappedType, options);
+        return parseTemplateLiteral(resolved);
+    }
+
+    private static Object parseTemplateLiteral(String resolved) {
+        if (resolved == null) return "";
+        String trimmed = resolved.trim();
+        if (trimmed.isEmpty()) return "";
+        if ("true".equalsIgnoreCase(trimmed)) return true;
+        if ("false".equalsIgnoreCase(trimmed)) return false;
+        if (trimmed.matches("^-?\\d+$")) {
+            try {
+                return Long.parseLong(trimmed);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (trimmed.matches("^-?\\d+\\.\\d+$")) {
+            try {
+                return Double.parseDouble(trimmed);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+                || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+            try {
+                return new JSONTokener(trimmed).nextValue();
+            } catch (Throwable ignored) {
+            }
+        }
+        return resolved;
+    }
+
+    private static String parseCustomTemplateResponse(String body, String answerPath) {
+        if (body == null || body.trim().isEmpty()) return null;
+        String trimmed = body.trim();
+        try {
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                Object root = new JSONTokener(trimmed).nextValue();
+                if (answerPath != null && !answerPath.trim().isEmpty()) {
+                    String extracted = normalizeJsonPathValue(extractJsonPathValue(root, answerPath.trim()));
+                    if (extracted != null && !extracted.isEmpty() && !QuestionCache.isInvalidAnswerText(extracted)) {
+                        return extracted;
+                    }
+                }
+                if (root instanceof JSONObject) {
+                    String answer = parseZxSeekResponse(trimmed);
+                    if (answer == null) answer = parseAdapterResponse(trimmed, -1);
+                    if (answer == null) answer = normalizeJsonPathValue(root);
+                    return QuestionCache.isInvalidAnswerText(answer) ? null : answer;
+                }
+                String answer = normalizeJsonPathValue(root);
+                return QuestionCache.isInvalidAnswerText(answer) ? null : answer;
+            }
+        } catch (Throwable t) {
+            Logx.w("TikuApi(custom): parse failed: " + t.getMessage());
+        }
+
+        if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() >= 2) {
+            trimmed = trimmed.substring(1, trimmed.length() - 1);
+        }
+        return trimmed.isEmpty() || QuestionCache.isInvalidAnswerText(trimmed) ? null : trimmed;
+    }
+
+    private static Object extractJsonPathValue(Object root, String path) {
+        if (root == null || path == null || path.isEmpty()) return root;
+        Object current = root;
+        for (String part : splitJsonPath(path)) {
+            if (part == null || part.trim().isEmpty()) continue;
+            current = stepJsonPath(current, part.trim());
+            if (current == null || current == JSONObject.NULL) {
+                return null;
+            }
+        }
+        return current;
+    }
+
+    private static List<String> splitJsonPath(String path) {
+        List<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int bracketDepth = 0;
+        for (int i = 0; i < path.length(); i++) {
+            char ch = path.charAt(i);
+            if (ch == '.' && bracketDepth == 0) {
+                parts.add(current.toString());
+                current.setLength(0);
+                continue;
+            }
+            if (ch == '[') bracketDepth++;
+            if (ch == ']' && bracketDepth > 0) bracketDepth--;
+            current.append(ch);
+        }
+        if (current.length() > 0) {
+            parts.add(current.toString());
+        }
+        return parts;
+    }
+
+    private static Object stepJsonPath(Object current, String part) {
+        String fieldName = part;
+        int bracketIndex = part.indexOf('[');
+        if (bracketIndex >= 0) {
+            fieldName = part.substring(0, bracketIndex);
+        }
+        if (!fieldName.isEmpty()) {
+            if (!(current instanceof JSONObject)) return null;
+            current = ((JSONObject) current).opt(fieldName);
+        }
+
+        int index = fieldName.length();
+        while (index < part.length()) {
+            int start = part.indexOf('[', index);
+            if (start < 0) break;
+            int end = part.indexOf(']', start + 1);
+            if (end < 0) return null;
+            if (!(current instanceof JSONArray)) return null;
+            String rawIndex = part.substring(start + 1, end).trim();
+            int arrayIndex;
+            try {
+                arrayIndex = Integer.parseInt(rawIndex);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+            current = ((JSONArray) current).opt(arrayIndex);
+            index = end + 1;
+        }
+        return current;
+    }
+
+    private static String normalizeJsonPathValue(Object payload) {
+        if (payload == null || payload == JSONObject.NULL) return null;
+        if (payload instanceof String || payload instanceof Number || payload instanceof Boolean) {
+            return normalizeAdapterText(String.valueOf(payload));
+        }
+        if (payload instanceof JSONArray) {
+            JSONArray arr = (JSONArray) payload;
+            List<String> values = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                String value = normalizeJsonPathValue(arr.opt(i));
+                if (value != null && !value.isEmpty()) {
+                    values.add(value);
+                }
+            }
+            return values.isEmpty() ? null : String.join("#", values);
+        }
+        if (payload instanceof JSONObject) {
+            JSONObject obj = (JSONObject) payload;
+            String nested = extractAdapterAnswer(obj, -1);
+            if (nested != null && !nested.isEmpty()) return nested;
+
+            String zxAnswer = extractZxSeekAnswer(obj);
+            if (zxAnswer != null && !zxAnswer.isEmpty()) return zxAnswer;
+
+            String direct = firstNonEmpty(
+                    normalizeJsonPathValue(obj.opt("answer")),
+                    normalizeJsonPathValue(obj.opt("data")),
+                    normalizeJsonPathValue(obj.opt("result")),
+                    normalizeAdapterText(obj.optString("value", "")),
+                    normalizeAdapterText(obj.optString("text", "")),
+                    normalizeAdapterText(obj.optString("content", ""))
+            );
+            return direct.isEmpty() ? null : direct;
+        }
+        return null;
     }
 
     private static boolean isZxSeekCompatibleSource(SourceConfig source) {
@@ -468,12 +762,39 @@ public class TikuApi {
                 String baseUrl = obj.optString("baseUrl", "").trim();
                 String token = obj.optString("token", "").trim();
                 String mode = obj.optString("mode", "").trim();
+                String answerPath = obj.optString("answerPath", "").trim();
                 boolean enabled = obj.optBoolean("enabled", false);
                 if (baseUrl.isEmpty()) continue;
-                result.add(new SourceConfig(name, baseUrl, token, enabled, mode));
+                result.add(new SourceConfig(
+                        name,
+                        baseUrl,
+                        token,
+                        enabled,
+                        mode,
+                        answerPath,
+                        parseTemplateParams(obj.optJSONArray("templateParams"))
+                ));
             }
         } catch (Throwable t) {
             Logx.w("TikuApi: parse source config failed: " + t.getMessage());
+        }
+        return result;
+    }
+
+    private static List<TemplateParamConfig> parseTemplateParams(JSONArray arr) {
+        List<TemplateParamConfig> result = new ArrayList<>();
+        if (arr == null) return result;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject obj = arr.optJSONObject(i);
+            if (obj == null) continue;
+            String key = obj.optString("key", "").trim();
+            String value = obj.optString("value", "").trim();
+            String placement = obj.optString("placement", PLACEMENT_QUERY).trim().toLowerCase(Locale.ROOT);
+            if (!PLACEMENT_HEADER.equals(placement) && !PLACEMENT_BODY.equals(placement)) {
+                placement = PLACEMENT_QUERY;
+            }
+            if (key.isEmpty() && value.isEmpty()) continue;
+            result.add(new TemplateParamConfig(key, value, placement));
         }
         return result;
     }
@@ -486,19 +807,40 @@ public class TikuApi {
         return result;
     }
 
+    private static final class TemplateParamConfig {
+        final String key;
+        final String value;
+        final String placement;
+
+        TemplateParamConfig(String key, String value, String placement) {
+            this.key = key != null ? key : "";
+            this.value = value != null ? value : "";
+            this.placement = placement != null ? placement : PLACEMENT_QUERY;
+        }
+    }
+
     private static final class SourceConfig {
         final String name;
         final String baseUrl;
         final String token;
         final boolean enabled;
         final String mode;
+        final String answerPath;
+        final List<TemplateParamConfig> templateParams;
 
         SourceConfig(String name, String baseUrl, String token, boolean enabled, String mode) {
+            this(name, baseUrl, token, enabled, mode, "", new ArrayList<>());
+        }
+
+        SourceConfig(String name, String baseUrl, String token, boolean enabled, String mode,
+                     String answerPath, List<TemplateParamConfig> templateParams) {
             this.name = name;
             this.baseUrl = baseUrl;
             this.token = token;
             this.enabled = enabled;
             this.mode = mode;
+            this.answerPath = answerPath != null ? answerPath : "";
+            this.templateParams = templateParams != null ? templateParams : new ArrayList<>();
         }
     }
 

@@ -45,12 +45,30 @@ class MainActivity : Activity(), App.ServiceStateListener {
         PROFILE
     }
 
+    private data class TikuTemplateParamConfig(
+        val key: String,
+        val value: String,
+        val placement: String = TEMPLATE_PARAM_PLACEMENT_QUERY
+    )
+
+    private data class TikuTemplateParamViews(
+        val rootView: View,
+        val queryButton: Button,
+        val headerButton: Button,
+        val bodyButton: Button,
+        val keyEdit: EditText,
+        val valueEdit: EditText,
+        val deleteButton: Button
+    )
+
     private data class TikuSourceConfig(
         val name: String,
         val baseUrl: String,
         val token: String,
         val enabled: Boolean,
-        val mode: String = SOURCE_MODE_AUTO
+        val mode: String = SOURCE_MODE_AUTO,
+        val answerPath: String = "",
+        val templateParams: List<TikuTemplateParamConfig> = emptyList()
     )
 
     private data class TikuSourceViews(
@@ -63,10 +81,17 @@ class MainActivity : Activity(), App.ServiceStateListener {
         val lemtkModeButton: Button,
         val adapterModeButton: Button,
         val zxseekModeButton: Button,
+        val customGetModeButton: Button,
+        val customPostModeButton: Button,
         val urlEdit: EditText,
         val tokenEdit: EditText,
+        val customSection: ViewGroup,
+        val answerPathEdit: EditText,
+        val templateParamsContainer: ViewGroup,
+        val addTemplateParamButton: Button,
         val quickFillButton: Button,
-        val deleteButton: Button
+        val deleteButton: Button,
+        val templateParamEditors: MutableList<TikuTemplateParamViews> = mutableListOf()
     )
 
     companion object {
@@ -92,7 +117,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_SIGN_LAST_URL = "assist_last_url"
         private const val KEY_SIGN_LAST_AT = "assist_last_at"
         private const val ZXSEEK_PRESET_SCHEMA_VERSION = 2
-        private const val TIKU_SOURCE_SCHEMA_VERSION = 3
+        private const val TIKU_SOURCE_SCHEMA_VERSION = 4
         private const val PRESET_TIKU_SOURCE_COUNT = 3
         private const val LEMTK_RECOMMENDED_URL = "https://api.vanse.top"
         private const val LEMTK_OFFICIAL_URL = "https://api.lemtk.xyz"
@@ -101,6 +126,11 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val SOURCE_MODE_LEMTK = "lemtk"
         private const val SOURCE_MODE_ADAPTER = "adapter"
         private const val SOURCE_MODE_ZXSEEK = "zxseek"
+        private const val SOURCE_MODE_CUSTOM_GET = "custom_get"
+        private const val SOURCE_MODE_CUSTOM_POST_JSON = "custom_post_json"
+        private const val TEMPLATE_PARAM_PLACEMENT_QUERY = "query"
+        private const val TEMPLATE_PARAM_PLACEMENT_HEADER = "header"
+        private const val TEMPLATE_PARAM_PLACEMENT_BODY = "body"
 
         private val VERSION_NAME get() = BuildConfig.VERSION_NAME
 
@@ -112,6 +142,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_VIDEO = "hook_video_enabled"
         private const val KEY_VIDEO_TIME = "hook_video_time_enabled"
         private const val KEY_EXAM = "hook_exam_enabled"
+        private const val KEY_EXAM_TRIGGER = "hook_exam_trigger"
+        private const val EXAM_TRIGGER_VOLUME_DOWN = "volume_down"
+        private const val EXAM_TRIGGER_VOLUME_UP = "volume_up"
+        private const val EXAM_TRIGGER_VOLUME_UP_DOWN = "volume_up_down"
     }
 
     private var mService: XposedService? = null
@@ -159,7 +193,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.versionBadge.text = "v$VERSION_NAME"
         binding.homeUpdateValue.text = "当前版本 v$VERSION_NAME"
         binding.homeAnnouncement.text = latestAnnouncementText
-        binding.homeBankSummary.text = "默认支持内置公共题库、LemTk 兼容节点、tikuAdapter 标准接口与 zxseek/wkexam 简易接口，协议可在卡片内直接切换。"
+        binding.homeBankSummary.text = "默认支持内置公共题库、LemTk 兼容节点、tikuAdapter 标准接口与 zxseek/wkexam 简易接口，也支持自定义 GET / POST JSON 模板。"
         binding.homeBankBadge.text = "题库 3源"
         binding.homeFeatureSummary.text = "已启用 0/8 项功能"
         binding.homeAiBadge.text = "AI 未配置"
@@ -261,6 +295,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 updateConnectedUi(service)
                 updateScopeStatus()
                 loadSwitchStates(service)
+                loadExamTriggerConfig(service)
                 loadLocationConfig(service)
                 loadSignAssistConfig(service)
                 loadAiConfig(service)
@@ -281,6 +316,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.scopeStatus.text = "作用域: 等待框架连接"
         binding.homeLicenseSummary.text = "许可状态待连接框架后读取。"
         binding.textSignAssistStatus.text = "等待框架连接后加载签到辅助配置。"
+        applyExamTriggerMode(EXAM_TRIGGER_VOLUME_DOWN)
     }
 
     private fun updateConnectedUi(service: XposedService) {
@@ -464,6 +500,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.btnHomeQuickSign.setOnClickListener { showTab(MainTab.FUNCTIONS) }
         binding.btnHomeQuickBanks.setOnClickListener { showTab(MainTab.BANKS) }
         binding.btnHomeQuickProfile.setOnClickListener { showTab(MainTab.PROFILE) }
+        binding.btnExamTriggerVolumeDown.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_DOWN) }
+        binding.btnExamTriggerVolumeUp.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP) }
+        binding.btnExamTriggerVolumeCombo.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP_DOWN) }
 
         binding.switchAutoSignTarget.setOnCheckedChangeListener { _, isChecked ->
             if (locationLoading) return@setOnCheckedChangeListener
@@ -508,7 +547,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.btnActivate.text = "激活中..."
             Thread {
                 val result = LicenseManager.activate(code, this@MainActivity)
-                runOnUiThread {
+                postIfAlive {
                     binding.btnActivate.isEnabled = true
                     binding.btnActivate.text = "激活"
                     if (result.success) {
@@ -522,9 +561,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
                                 .apply()
                             updateLicenseStatus(service)
                         }
-                        Toast.makeText(this, "激活成功！重启学习通生效", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, "激活成功！重启学习通生效", Toast.LENGTH_LONG).show()
                     } else {
-                        Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, result.message, Toast.LENGTH_LONG).show()
                     }
                 }
             }.start()
@@ -574,6 +613,61 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchExam.isChecked
         ).count { it }
         binding.homeFeatureSummary.text = "已启用 $enabledCount/8 项功能"
+    }
+
+    private fun loadExamTriggerConfig(service: XposedService) {
+        try {
+            val prefs = service.getRemotePreferences(PREFS_CONFIG)
+            applyExamTriggerMode(prefs.getString(KEY_EXAM_TRIGGER, EXAM_TRIGGER_VOLUME_DOWN))
+        } catch (_: Throwable) {
+            applyExamTriggerMode(EXAM_TRIGGER_VOLUME_DOWN)
+        }
+    }
+
+    private fun saveExamTriggerMode(mode: String) {
+        val service = mService
+        if (service == null) {
+            Toast.makeText(this, "框架未连接，无法保存", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val normalizedMode = normalizeExamTriggerMode(mode)
+        try {
+            service.getRemotePreferences(PREFS_CONFIG)
+                .edit()
+                .putString(KEY_EXAM_TRIGGER, normalizedMode)
+                .apply()
+            applyExamTriggerMode(normalizedMode)
+            Toast.makeText(this, "搜题实体键已更新，重启学习通后生效", Toast.LENGTH_SHORT).show()
+        } catch (e: Throwable) {
+            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun applyExamTriggerMode(rawMode: String?) {
+        val mode = normalizeExamTriggerMode(rawMode)
+        setExamTriggerButtonState(binding.btnExamTriggerVolumeDown, mode == EXAM_TRIGGER_VOLUME_DOWN)
+        setExamTriggerButtonState(binding.btnExamTriggerVolumeUp, mode == EXAM_TRIGGER_VOLUME_UP)
+        setExamTriggerButtonState(binding.btnExamTriggerVolumeCombo, mode == EXAM_TRIGGER_VOLUME_UP_DOWN)
+        binding.textExamTriggerStatus.text = when (mode) {
+            EXAM_TRIGGER_VOLUME_UP -> "实体键触发：音量 +。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
+            EXAM_TRIGGER_VOLUME_UP_DOWN -> "实体键触发：先按音量 +，再按音量 -。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
+            else -> "实体键触发：音量 -。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
+        }
+    }
+
+    private fun normalizeExamTriggerMode(rawMode: String?): String {
+        return when (rawMode) {
+            EXAM_TRIGGER_VOLUME_UP -> EXAM_TRIGGER_VOLUME_UP
+            EXAM_TRIGGER_VOLUME_UP_DOWN -> EXAM_TRIGGER_VOLUME_UP_DOWN
+            else -> EXAM_TRIGGER_VOLUME_DOWN
+        }
+    }
+
+    private fun setExamTriggerButtonState(button: Button, active: Boolean) {
+        button.setBackgroundResource(
+            if (active) R.drawable.tiku_mode_chip_active else R.drawable.tiku_mode_chip_inactive
+        )
+        button.setTextColor(if (active) Color.WHITE else getColor(R.color.ios_label))
     }
 
     private fun loadLocationConfig(service: XposedService) {
@@ -769,7 +863,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         photoUri: String
     ) {
         val configuredItems = mutableListOf<String>()
-        if (signCode.isNotBlank()) configuredItems += "口令"
+        if (signCode.isNotBlank()) configuredItems += "签到口令"
         if (h5QrPayload.isNotBlank()) configuredItems += "H5 二维码"
         if (nativeQrPayload.isNotBlank()) configuredItems += "原生扫码"
         if (photoUri.isNotBlank()) configuredItems += "拍照 URI"
@@ -796,7 +890,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 }
             }
             configured > 0 -> "已配置 $configured/4 项辅助参数（$configuredSummary）；H5 rcode 与原生 signId/time 会分开使用，互不串线。"
-            else -> "可分别预填手势口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
+            else -> "可分别预填签到口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露口令，也会自动尝试提取并提交。"
         }
     }
 
@@ -928,6 +1022,20 @@ class MainActivity : Activity(), App.ServiceStateListener {
                     put("token", source.token)
                     put("enabled", source.enabled)
                     put("mode", source.mode)
+                    if (source.answerPath.isNotBlank()) {
+                        put("answerPath", source.answerPath)
+                    }
+                    if (source.templateParams.isNotEmpty()) {
+                        put("templateParams", JSONArray().apply {
+                            source.templateParams.forEach { param ->
+                                put(JSONObject().apply {
+                                    put("key", param.key)
+                                    put("value", param.value)
+                                    put("placement", param.placement)
+                                })
+                            }
+                        })
+                    }
                 })
             }
 
@@ -961,16 +1069,20 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 2 -> "ZXSeek / Wkexam"
                 else -> "自定义节点 ${index - 2}"
             }
+            val mode = inferTikuSourceMode(
+                nameInput.ifBlank { fallbackName },
+                baseUrl,
+                selectedTikuSourceMode(views)
+            )
+            val isCustomTemplate = isCustomTikuSourceMode(mode)
             TikuSourceConfig(
                 name = if (nameInput.isNotBlank()) nameInput else if (baseUrl.isNotBlank()) fallbackName else "",
                 baseUrl = baseUrl,
-                token = views.tokenEdit.text.toString().trim(),
+                token = if (isCustomTemplate) "" else views.tokenEdit.text.toString().trim(),
                 enabled = views.enabledSwitch.isChecked && baseUrl.isNotBlank(),
-                mode = inferTikuSourceMode(
-                    nameInput.ifBlank { fallbackName },
-                    baseUrl,
-                    selectedTikuSourceMode(views)
-                )
+                mode = mode,
+                answerPath = if (isCustomTemplate) views.answerPathEdit.text.toString().trim() else "",
+                templateParams = if (isCustomTemplate) collectTemplateParams(views) else emptyList()
             )
         }
     }
@@ -1020,9 +1132,11 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 val name = obj.optString("name", "").trim()
                 val baseUrl = obj.optString("baseUrl", "").trim()
                 val token = obj.optString("token", "").trim()
+                val answerPath = obj.optString("answerPath", "").trim()
+                val templateParams = parseTemplateParams(obj.optJSONArray("templateParams"))
                 val mode = inferTikuSourceMode(name, baseUrl, obj.optString("mode", ""))
                 val enabled = obj.optBoolean("enabled", false) && baseUrl.isNotBlank()
-                if (name.isBlank() && baseUrl.isBlank() && token.isBlank()) {
+                if (name.isBlank() && baseUrl.isBlank() && token.isBlank() && answerPath.isBlank() && templateParams.isEmpty()) {
                     continue
                 }
                 parsed.add(
@@ -1031,7 +1145,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
                         baseUrl = baseUrl,
                         token = token,
                         enabled = enabled,
-                        mode = mode
+                        mode = mode,
+                        answerPath = answerPath,
+                        templateParams = templateParams
                     )
                 )
             }
@@ -1060,18 +1176,29 @@ class MainActivity : Activity(), App.ServiceStateListener {
             lemtkModeButton = itemView.findViewById(R.id.btn_source_mode_lemtk),
             adapterModeButton = itemView.findViewById(R.id.btn_source_mode_adapter),
             zxseekModeButton = itemView.findViewById(R.id.btn_source_mode_zxseek),
+            customGetModeButton = itemView.findViewById(R.id.btn_source_mode_custom_get),
+            customPostModeButton = itemView.findViewById(R.id.btn_source_mode_custom_post),
             urlEdit = itemView.findViewById(R.id.edit_source_url),
             tokenEdit = itemView.findViewById(R.id.edit_source_token),
+            customSection = itemView.findViewById(R.id.layout_source_custom_template),
+            answerPathEdit = itemView.findViewById(R.id.edit_source_answer_path),
+            templateParamsContainer = itemView.findViewById(R.id.container_source_template_params),
+            addTemplateParamButton = itemView.findViewById(R.id.btn_add_source_template_param),
             quickFillButton = itemView.findViewById(R.id.btn_source_quick_fill),
             deleteButton = itemView.findViewById(R.id.btn_source_delete)
         )
         views.enabledSwitch.isChecked = source.enabled
         views.nameEdit.setText(source.name)
-        applyTikuSourceMode(views, source.mode)
         views.urlEdit.setText(source.baseUrl)
         views.tokenEdit.setText(source.token)
+        views.answerPathEdit.setText(source.answerPath)
+        source.templateParams.forEach { addTemplateParamEditor(views, it) }
+        applyTikuSourceMode(views, source.mode)
         modeButtonPairs(views).forEach { (button, mode) ->
             button.setOnClickListener { applyTikuSourceMode(views, mode) }
+        }
+        views.addTemplateParamButton.setOnClickListener {
+            addTemplateParamEditor(views, newBlankTemplateParamForMode(selectedTikuSourceMode(views)))
         }
         views.quickFillButton.setOnClickListener {
             applyTikuSourceMode(views, SOURCE_MODE_ZXSEEK)
@@ -1155,7 +1282,9 @@ class MainActivity : Activity(), App.ServiceStateListener {
             views.autoModeButton to SOURCE_MODE_AUTO,
             views.lemtkModeButton to SOURCE_MODE_LEMTK,
             views.adapterModeButton to SOURCE_MODE_ADAPTER,
-            views.zxseekModeButton to SOURCE_MODE_ZXSEEK
+            views.zxseekModeButton to SOURCE_MODE_ZXSEEK,
+            views.customGetModeButton to SOURCE_MODE_CUSTOM_GET,
+            views.customPostModeButton to SOURCE_MODE_CUSTOM_POST_JSON
         )
     }
 
@@ -1174,11 +1303,24 @@ class MainActivity : Activity(), App.ServiceStateListener {
             button.setBackgroundResource(if (active) R.drawable.tiku_mode_chip_active else R.drawable.tiku_mode_chip_inactive)
             button.setTextColor(if (active) Color.WHITE else getColor(R.color.ios_label))
         }
+        val isCustomTemplate = isCustomTikuSourceMode(normalized)
+        views.tokenEdit.visibility = if (isCustomTemplate) View.GONE else View.VISIBLE
+        views.customSection.visibility = if (isCustomTemplate) View.VISIBLE else View.GONE
+        if (isCustomTemplate && views.templateParamEditors.isEmpty()) {
+            addTemplateParamEditor(views, starterTemplateParamForMode(normalized))
+        }
         views.modeHintView.text = when (normalized) {
             SOURCE_MODE_LEMTK -> "按 LemTk 兼容协议请求，根地址即可；Token 可留空。"
             SOURCE_MODE_ADAPTER -> "按 tikuAdapter 兼容接口请求，Token 栏可填写完整查询参数。"
             SOURCE_MODE_ZXSEEK -> "按 ZXSeek / wkexam 接口请求，建议直接填写 API 地址并在下方填 token。"
+            SOURCE_MODE_CUSTOM_GET -> "自定义 GET 模板：在下方新增 Query / Header 参数行，自行决定参数名和排布。"
+            SOURCE_MODE_CUSTOM_POST_JSON -> "自定义 POST JSON 模板：Body 参数会拼成 JSON，请在答案路径中写出响应取值位置。"
             else -> "根据名称和 URL 自动识别协议，适合混合兼容节点。"
+        }
+        views.urlEdit.hint = when (normalized) {
+            SOURCE_MODE_CUSTOM_GET -> "请求地址，如 https://api.example.com/search"
+            SOURCE_MODE_CUSTOM_POST_JSON -> "请求地址，如 https://api.example.com/search"
+            else -> views.urlEdit.hint
         }
         views.tokenEdit.hint = when (normalized) {
             SOURCE_MODE_LEMTK -> "Token（LemTk 可留空）"
@@ -1194,6 +1336,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
             SOURCE_MODE_LEMTK, "lemtk-compatible" -> SOURCE_MODE_LEMTK
             SOURCE_MODE_ADAPTER, "tikuadapter" -> SOURCE_MODE_ADAPTER
             SOURCE_MODE_ZXSEEK, "wkexam", "eduquest" -> SOURCE_MODE_ZXSEEK
+            SOURCE_MODE_CUSTOM_GET, "custom-get", "template_get" -> SOURCE_MODE_CUSTOM_GET
+            SOURCE_MODE_CUSTOM_POST_JSON, "custom-post-json", "template_post_json", "template_post" -> SOURCE_MODE_CUSTOM_POST_JSON
             else -> SOURCE_MODE_AUTO
         }
     }
@@ -1232,8 +1376,132 @@ class MainActivity : Activity(), App.ServiceStateListener {
             SOURCE_MODE_LEMTK -> "LemTk 兼容"
             SOURCE_MODE_ADAPTER -> "tikuAdapter"
             SOURCE_MODE_ZXSEEK -> "ZXSeek / Wkexam"
+            SOURCE_MODE_CUSTOM_GET -> "自定义 GET"
+            SOURCE_MODE_CUSTOM_POST_JSON -> "自定义 POST JSON"
             else -> "自动识别"
         }
+    }
+
+    private fun isCustomTikuSourceMode(mode: String): Boolean {
+        return when (normalizeTikuSourceMode(mode)) {
+            SOURCE_MODE_CUSTOM_GET, SOURCE_MODE_CUSTOM_POST_JSON -> true
+            else -> false
+        }
+    }
+
+    private fun parseTemplateParams(rawArray: JSONArray?): List<TikuTemplateParamConfig> {
+        if (rawArray == null) return emptyList()
+        val result = mutableListOf<TikuTemplateParamConfig>()
+        for (index in 0 until rawArray.length()) {
+            val obj = rawArray.optJSONObject(index) ?: continue
+            val key = obj.optString("key", "").trim()
+            val value = obj.optString("value", "").trim()
+            val placement = normalizeTemplateParamPlacement(obj.optString("placement", TEMPLATE_PARAM_PLACEMENT_QUERY))
+            if (key.isBlank() && value.isBlank()) continue
+            result += TikuTemplateParamConfig(key, value, placement)
+        }
+        return result
+    }
+
+    private fun collectTemplateParams(views: TikuSourceViews): List<TikuTemplateParamConfig> {
+        return views.templateParamEditors.mapNotNull { paramViews ->
+            val key = paramViews.keyEdit.text.toString().trim()
+            val value = paramViews.valueEdit.text.toString().trim()
+            if (key.isBlank() && value.isBlank()) {
+                null
+            } else {
+                TikuTemplateParamConfig(
+                    key = key,
+                    value = value,
+                    placement = selectedTemplateParamPlacement(paramViews)
+                )
+            }
+        }
+    }
+
+    private fun addTemplateParamEditor(
+        sourceViews: TikuSourceViews,
+        config: TikuTemplateParamConfig = newBlankTemplateParamForMode(selectedTikuSourceMode(sourceViews))
+    ) {
+        val itemView = layoutInflater.inflate(R.layout.item_tiku_template_param, sourceViews.templateParamsContainer, false)
+        val paramViews = TikuTemplateParamViews(
+            rootView = itemView,
+            queryButton = itemView.findViewById(R.id.btn_template_param_query),
+            headerButton = itemView.findViewById(R.id.btn_template_param_header),
+            bodyButton = itemView.findViewById(R.id.btn_template_param_body),
+            keyEdit = itemView.findViewById(R.id.edit_template_param_key),
+            valueEdit = itemView.findViewById(R.id.edit_template_param_value),
+            deleteButton = itemView.findViewById(R.id.btn_delete_template_param)
+        )
+        paramViews.keyEdit.setText(config.key)
+        paramViews.valueEdit.setText(config.value)
+        applyTemplateParamPlacement(paramViews, config.placement)
+        templateParamPlacementButtonPairs(paramViews).forEach { (button, placement) ->
+            button.setOnClickListener { applyTemplateParamPlacement(paramViews, placement) }
+        }
+        paramViews.deleteButton.setOnClickListener {
+            sourceViews.templateParamEditors.remove(paramViews)
+            sourceViews.templateParamsContainer.removeView(paramViews.rootView)
+        }
+        sourceViews.templateParamEditors += paramViews
+        sourceViews.templateParamsContainer.addView(itemView)
+    }
+
+    private fun templateParamPlacementButtonPairs(views: TikuTemplateParamViews): List<Pair<Button, String>> {
+        return listOf(
+            views.queryButton to TEMPLATE_PARAM_PLACEMENT_QUERY,
+            views.headerButton to TEMPLATE_PARAM_PLACEMENT_HEADER,
+            views.bodyButton to TEMPLATE_PARAM_PLACEMENT_BODY
+        )
+    }
+
+    private fun applyTemplateParamPlacement(views: TikuTemplateParamViews, placement: String?) {
+        val normalized = normalizeTemplateParamPlacement(placement)
+        templateParamPlacementButtonPairs(views).forEach { (button, value) ->
+            val active = value == normalized
+            button.isSelected = active
+            button.setBackgroundResource(if (active) R.drawable.tiku_mode_chip_active else R.drawable.tiku_mode_chip_inactive)
+            button.setTextColor(if (active) Color.WHITE else getColor(R.color.ios_label))
+        }
+    }
+
+    private fun selectedTemplateParamPlacement(views: TikuTemplateParamViews): String {
+        return templateParamPlacementButtonPairs(views)
+            .firstOrNull { it.first.isSelected }
+            ?.second
+            ?: TEMPLATE_PARAM_PLACEMENT_QUERY
+    }
+
+    private fun normalizeTemplateParamPlacement(rawPlacement: String?): String {
+        return when (rawPlacement?.trim()?.lowercase(Locale.ROOT)) {
+            TEMPLATE_PARAM_PLACEMENT_HEADER -> TEMPLATE_PARAM_PLACEMENT_HEADER
+            TEMPLATE_PARAM_PLACEMENT_BODY -> TEMPLATE_PARAM_PLACEMENT_BODY
+            else -> TEMPLATE_PARAM_PLACEMENT_QUERY
+        }
+    }
+
+    private fun starterTemplateParamForMode(mode: String): TikuTemplateParamConfig {
+        return when (normalizeTikuSourceMode(mode)) {
+            SOURCE_MODE_CUSTOM_POST_JSON -> TikuTemplateParamConfig(
+                key = "question",
+                value = "{{question}}",
+                placement = TEMPLATE_PARAM_PLACEMENT_BODY
+            )
+            else -> TikuTemplateParamConfig(
+                key = "q",
+                value = "{{question}}",
+                placement = TEMPLATE_PARAM_PLACEMENT_QUERY
+            )
+        }
+    }
+
+    private fun newBlankTemplateParamForMode(mode: String): TikuTemplateParamConfig {
+        val placement = if (normalizeTikuSourceMode(mode) == SOURCE_MODE_CUSTOM_POST_JSON) {
+            TEMPLATE_PARAM_PLACEMENT_BODY
+        } else {
+            TEMPLATE_PARAM_PLACEMENT_QUERY
+        }
+        return TikuTemplateParamConfig(key = "", value = "", placement = placement)
     }
 
     private fun updateBankSummary(sources: List<TikuSourceConfig>, cacheEnabled: Boolean) {
@@ -1340,6 +1608,12 @@ class MainActivity : Activity(), App.ServiceStateListener {
         return if (keepPath) withScheme.trimEnd('/') else withScheme.trimEnd('/')
     }
 
+    private fun postIfAlive(block: () -> Unit) {
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) block()
+        }
+    }
+
     private fun formatTime(timestamp: Long): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
         return sdf.format(Date(timestamp))
@@ -1352,8 +1626,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
             val lat = data.getDoubleExtra(MapPickerActivity.RESULT_LAT, 0.0)
             val lng = data.getDoubleExtra(MapPickerActivity.RESULT_LNG, 0.0)
             val addr = data.getStringExtra(MapPickerActivity.RESULT_ADDR) ?: ""
-            binding.editLat.setText(lat.toString())
-            binding.editLng.setText(lng.toString())
+            binding.editLat.setText(formatCoordinate(lat))
+            binding.editLng.setText(formatCoordinate(lng))
             if (addr.isNotEmpty()) binding.editAddr.setText(addr)
             saveLocationConfig()
         }
@@ -1381,7 +1655,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
                 val code = conn.responseCode
                 if (code != 200) {
-                    runOnUiThread { binding.homeUpdateValue.text = "更新检查失败，请稍后重试" }
+                    postIfAlive { binding.homeUpdateValue.text = "更新检查失败，请稍后重试" }
                     return@Thread
                 }
                 val body = conn.inputStream.bufferedReader().readText()
@@ -1407,7 +1681,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 val downloadUrl = apkUrl.ifEmpty { htmlUrl }
                 val remoteVersion = tagName.removePrefix("v").removePrefix("V")
                 val hasUpdate = remoteVersion.isNotEmpty() && isNewerVersion(remoteVersion, VERSION_NAME)
-                runOnUiThread {
+                postIfAlive {
                     binding.homeUpdateValue.text = if (hasUpdate) {
                         "发现新版本: $releaseName"
                     } else {
@@ -1418,7 +1692,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                     }
                 }
             } catch (_: Throwable) {
-                runOnUiThread { binding.homeUpdateValue.text = "更新检查失败，请稍后重试" }
+                postIfAlive { binding.homeUpdateValue.text = "更新检查失败，请稍后重试" }
             }
         }.start()
     }
@@ -1467,7 +1741,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 conn.readTimeout = 5000
                 val code = conn.responseCode
                 if (code != 200) {
-                    runOnUiThread { binding.homeAnnouncement.text = latestAnnouncementText }
+                    postIfAlive { binding.homeAnnouncement.text = latestAnnouncementText }
                     return@Thread
                 }
                 val body = conn.inputStream.bufferedReader().readText()
@@ -1475,14 +1749,14 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 val json = JSONObject(body)
                 val announcement = json.optString("announcement", "")
                 latestAnnouncementText = if (announcement.isNotEmpty()) announcement else "暂无公告"
-                runOnUiThread {
+                postIfAlive {
                     binding.homeAnnouncement.text = latestAnnouncementText
                     if (announcement.isNotEmpty()) {
                         showAnnouncement(announcement)
                     }
                 }
             } catch (_: Throwable) {
-                runOnUiThread { binding.homeAnnouncement.text = latestAnnouncementText }
+                postIfAlive { binding.homeAnnouncement.text = latestAnnouncementText }
             }
         }.start()
     }

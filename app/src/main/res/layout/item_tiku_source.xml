@@ -116,6 +116,38 @@
                 android:textAllCaps="false"
                 android:textColor="@color/ios_label"
                 android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_source_mode_custom_get"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="自定义 GET"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/btn_source_mode_custom_post"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/tiku_mode_chip_inactive"
+                android:minWidth="0dp"
+                android:paddingHorizontal="16dp"
+                android:text="自定义 POST JSON"
+                android:textAllCaps="false"
+                android:textColor="@color/ios_label"
+                android:textSize="13sp" />
         </LinearLayout>
     </HorizontalScrollView>
 
@@ -153,6 +185,51 @@
         android:textColorHint="@color/ios_tertiary_label" />
 
     <LinearLayout
+        android:id="@+id/layout_source_custom_template"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingExtra="3dp"
+            android:text="自定义模板支持 Query / Header / Body 三种参数位置。参数值支持占位符：{{question}}、{{type}}、{{mapped_type}}、{{options}}、{{options_json}}。"
+            android:textColor="@color/ios_secondary_label"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/edit_source_answer_path"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/ios_input_bg"
+            android:hint="答案路径，如 data.answer / result / data.list[0].answer"
+            android:padding="14dp"
+            android:textColor="@color/ios_label"
+            android:textColorHint="@color/ios_tertiary_label" />
+
+        <LinearLayout
+            android:id="@+id/container_source_template_params"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="vertical" />
+
+        <Button
+            android:id="@+id/btn_add_source_template_param"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/btn_map_secondary"
+            android:text="新增模板参数"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white" />
+    </LinearLayout>
+
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
@@ -167,7 +244,7 @@
             android:paddingHorizontal="16dp"
             android:text="填入 ZXSeek 官方地址"
             android:textAllCaps="false"
-            android:textColor="@color/ios_label"
+            android:textColor="@android:color/white"
             android:visibility="gone" />
 
         <Button
@@ -179,7 +256,7 @@
             android:paddingHorizontal="16dp"
             android:text="删除该源"
             android:textAllCaps="false"
-            android:textColor="@color/ios_label"
+            android:textColor="@android:color/white"
             android:visibility="gone" />
     </LinearLayout>
 
