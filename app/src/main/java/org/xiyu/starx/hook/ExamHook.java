@@ -63,6 +63,7 @@ public class ExamHook {
     private static final String EXAM_TRIGGER_VOLUME_DOWN = "volume_down";
     private static final String EXAM_TRIGGER_VOLUME_UP = "volume_up";
     private static final String EXAM_TRIGGER_VOLUME_UP_DOWN = "volume_up_down";
+    private static final String EXAM_TRIGGER_AUTO = "auto";
     private static final String QUESTION_ROOT_SELECTORS = ".TiMu,.tiMu,.singleQuesId,[id^=\"question\"],.questionLi,.Cy_TItle,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.mark_name,.question-wrap,.topic-item,.question-list li";
     private static final String QUESTION_OPTION_SELECTORS = "li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.radio_option,.checkbox_option,.optionUl li,.answerBg .radioItemCont,.answerBg .checkItemCont,.optionItem,.questionLi .optionUl li,[class*=option] li,[class*=Option] li";
     private static final String[] EXAM_URL_HINTS = new String[]{
@@ -264,8 +265,7 @@ public class ExamHook {
             "return 'installed';" +
             "})()";
 
-    private static final String SEARCH_BUTTON_LAYOUT_FIX_JS =
-            "(function(){" +
+    private static final String SEARCH_BUTTON_LAYOUT_FIX_JS =            "(function(){" +
             "if(window.__starxLayoutFixReady)return 'ready';" +
             "window.__starxLayoutFixReady=true;" +
             "function textOf(el){return ((el&&(el.innerText||el.textContent||el.value))||'').replace(/\\s+/g,' ').trim();}" +
@@ -285,6 +285,28 @@ public class ExamHook {
             "window.addEventListener('scroll',apply,true);" +
             "try{new MutationObserver(function(){apply();}).observe(document.documentElement||document.body,{childList:true,subtree:true,attributes:true});}catch(e){}" +
             "setTimeout(apply,120);setTimeout(apply,800);setTimeout(apply,1800);apply();" +
+            "return 'installed';" +
+            "})()";
+
+    /**
+     * 自动搜题监听器 — 当触发模式为 auto 时注入
+     *
+     * 策略：页面有题目时，首次延迟 1200ms 调用一次 __starxTriggerSearch()，
+     * 随后监听 DOM 变化（.TiMu 等容器），题目变化时再次触发，节流 1800ms。
+     * 用户仍可通过悬浮按钮或实体键手动触发；此监听只补齐"首次+翻题"自动化。
+     */
+    private static final String AUTO_SEARCH_WATCHER_JS =
+            "(function(){" +
+            "if(window.__starxAutoSearchReady)return 'ready';" +
+            "window.__starxAutoSearchReady=true;" +
+            "var ROOTS='" + ".TiMu,.tiMu,.singleQuesId,[id^=\\\"question\\\"],.questionLi,.Cy_TItle,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.mark_name,.question-wrap,.topic-item,.question-list li" + "';" +
+            "var lastSig='';var lastFireAt=0;var MIN_GAP=1800;" +
+            "function visible(el){if(!el||!el.getBoundingClientRect)return false;var r=el.getBoundingClientRect();if(r.width<8||r.height<8)return false;var st=getComputedStyle(el);return st.display!=='none'&&st.visibility!=='hidden';}" +
+            "function sig(){try{var nodes=document.querySelectorAll(ROOTS);if(!nodes||!nodes.length)return '';var ids=[];for(var i=0;i<nodes.length&&i<6;i++){var n=nodes[i];if(!visible(n))continue;var t=(n.innerText||n.textContent||'').replace(/\\s+/g,' ').trim().substring(0,60);ids.push((n.id||'')+'|'+t);}return ids.join('#');}catch(e){return '';}}" +
+            "function fire(reason){try{var now=Date.now();if(now-lastFireAt<MIN_GAP)return;var s=sig();if(!s||s===lastSig)return;lastSig=s;lastFireAt=now;if(typeof window.__starxTriggerSearch==='function'){try{window._starx&&window._starx.log&&window._starx.log('auto:'+reason);}catch(_e){}window.__starxTriggerSearch();}}catch(e){}}" +
+            "setTimeout(function(){fire('init');},1200);" +
+            "setTimeout(function(){fire('retry');},2600);" +
+            "try{new MutationObserver(function(muts){var relevant=false;for(var i=0;i<muts.length&&!relevant;i++){var m=muts[i];if(!m.target)continue;var cls=(m.target.className||'')+'';if(/TiMu|tiMu|questionLi|singleQuesId|queBox|mark_item|questionItem|exam-item|question-wrap|topic-item/.test(cls)){relevant=true;break;}if(m.addedNodes&&m.addedNodes.length){for(var j=0;j<m.addedNodes.length;j++){var node=m.addedNodes[j];if(!node||node.nodeType!==1)continue;if(node.matches&&node.matches(ROOTS)){relevant=true;break;}if(node.querySelector&&node.querySelector(ROOTS)){relevant=true;break;}}}}if(relevant)fire('mut');}).observe(document.documentElement||document.body,{childList:true,subtree:true});}catch(e){}" +
             "return 'installed';" +
             "})()";
 
@@ -673,6 +695,8 @@ public class ExamHook {
                                             mainHandler.post(() -> showAnswerOverlay(context,
                                                     "[OCR · " + source + "] " + answer));
                                         }
+                                        // 尝试把答案直接写回当前考试 WebView —— 避免用户再手动对照勾选
+                                        mainHandler.post(() -> applyOcrAnswerToActiveWebView(queryText, answer));
                                     }
 
                                     @Override
@@ -789,6 +813,11 @@ public class ExamHook {
                     Logx.i("ExamHook: main search ui inject: " + value));
             webView.evaluateJavascript(QUERY_MONITOR_JS, value ->
                     Logx.i("ExamHook: query monitor injected: " + value));
+
+            if (EXAM_TRIGGER_AUTO.equals(readExamTriggerMode())) {
+                webView.evaluateJavascript(AUTO_SEARCH_WATCHER_JS, value ->
+                        Logx.i("ExamHook: auto search watcher: " + value));
+            }
 
             // 向所有同源 iframe 注入桥接；若 iframe 内实际有题，则恢复独立搜题按钮
             String iframeInjectJs =
@@ -1290,6 +1319,11 @@ public class ExamHook {
         int keyCode = event.getKeyCode();
         long now = System.currentTimeMillis();
 
+        if (EXAM_TRIGGER_AUTO.equals(mode)) {
+            lastVolumeUpPressedAt = 0L;
+            return false;
+        }
+
         if (EXAM_TRIGGER_VOLUME_UP_DOWN.equals(mode)) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                 if (pickActiveExamWebView() == null) {
@@ -1319,7 +1353,9 @@ public class ExamHook {
         try {
             var prefs = module.getRemotePreferences(CONFIG_PREFS);
             String raw = prefs.getString(KEY_EXAM_TRIGGER, EXAM_TRIGGER_VOLUME_DOWN);
-            if (EXAM_TRIGGER_VOLUME_UP.equals(raw) || EXAM_TRIGGER_VOLUME_UP_DOWN.equals(raw)) {
+            if (EXAM_TRIGGER_VOLUME_UP.equals(raw)
+                    || EXAM_TRIGGER_VOLUME_UP_DOWN.equals(raw)
+                    || EXAM_TRIGGER_AUTO.equals(raw)) {
                 return raw;
             }
         } catch (Throwable t) {
@@ -1341,6 +1377,16 @@ public class ExamHook {
         for (java.util.Map.Entry<Integer, WeakReference<WebView>> entry : activeExamWebViews.entrySet()) {
             WebView webView = entry.getValue().get();
             if (webView == null) {
+                staleIds.add(entry.getKey());
+                continue;
+            }
+            // 若 WebView 已导航离开考试页（例如返回首页），从活动集合中移除，避免误触
+            String currentUrl = null;
+            try {
+                currentUrl = webView.getUrl();
+            } catch (Throwable ignored) {
+            }
+            if (currentUrl != null && !currentUrl.isEmpty() && !isExamUrl(currentUrl)) {
                 staleIds.add(entry.getKey());
                 continue;
             }
@@ -1372,6 +1418,51 @@ public class ExamHook {
             }
         });
         return true;
+    }
+
+    /**
+     * 将 OCR 搜题得到的答案写回当前考试 WebView。
+     *
+     * 策略：在当前可见的考试 WebView 中，按 OCR 原文定位最匹配的题块，
+     * 针对选择题点选文本/字母匹配的选项；判断题支持对/错、正确/错误、√/×。
+     * 若页面没有题块或找不到答案则静默失败，外层 overlay 仍会提示用户。
+     */
+    private void applyOcrAnswerToActiveWebView(String ocrText, String answer) {
+        if (answer == null || answer.trim().isEmpty()) return;
+        WebView webView = pickActiveExamWebView();
+        if (webView == null) return;
+        try {
+            String jsOcr = jsonEscapeForJs(ocrText == null ? "" : ocrText);
+            String jsAns = jsonEscapeForJs(answer);
+            String script =
+                "(function(){try{" +
+                "var ocr=" + jsOcr + ";var ans=" + jsAns + ";" +
+                "function norm(s){return String(s||'').replace(/\\s+/g,'').toLowerCase();}" +
+                "function stripOptPrefix(s){return String(s||'').replace(/^[\\s]*[A-Za-z][\\.、:：\\s]\\s*/,'').trim();}" +
+                "var roots=document.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question');" +
+                "if(!roots||!roots.length)return 'no_roots';" +
+                "var ocrN=norm(ocr),best=null,bestScore=0;" +
+                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title');var t=norm((te?te.textContent:r.textContent));if(!t)continue;var score=0;if(ocrN&&(t.indexOf(ocrN)>=0||ocrN.indexOf(t)>=0))score=2;else{var c=0,w=ocrN.length;for(var k=0;k<w&&k<32;k++){if(t.indexOf(ocrN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,32));}if(score>bestScore){best=r;bestScore=score;}}" +
+                "if(!best)return 'no_match';" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.radio_option,.checkbox_option,.optionUl li,.optionItem');" +
+                "if(!opts||!opts.length)return 'no_options';" +
+                "var letters=(ans.match(/[A-Za-z]/g)||[]).map(function(c){return c.toUpperCase();});" +
+                "var ansText=norm(stripOptPrefix(ans));" +
+                "var clicked=0;" +
+                "for(var i=0;i<opts.length;i++){" +
+                "var opt=opts[i];var raw=(opt.innerText||opt.textContent||'').trim();var letterMatch=(raw.match(/^\\s*([A-Za-z])[\\.、:：\\s]/)||[])[1];letterMatch=letterMatch?letterMatch.toUpperCase():'';" +
+                "var textN=norm(stripOptPrefix(raw));" +
+                "var hit=false;" +
+                "if(letterMatch&&letters.indexOf(letterMatch)>=0)hit=true;" +
+                "else if(ansText&&textN&&(textN===ansText||textN.indexOf(ansText)>=0||ansText.indexOf(textN)>=0))hit=true;" +
+                "if(hit){var tgt=opt.querySelector('input,label,a,span')||opt;try{tgt.click();}catch(e){try{opt.click();}catch(_e){}}clicked++;}" +
+                "}" +
+                "return 'clicked='+clicked;" +
+                "}catch(e){return 'err:'+e.message;}})()";
+            webView.evaluateJavascript(script, value -> Logx.i("ExamHook: ocr apply => " + value));
+        } catch (Throwable t) {
+            Logx.w("ExamHook: ocr apply failed: " + t.getMessage());
+        }
     }
 
     private void notifyStatus(WebView webView, String message, int durationMs) {

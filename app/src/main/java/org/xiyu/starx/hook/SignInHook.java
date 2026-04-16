@@ -874,10 +874,12 @@ public class SignInHook {
 
     private void persistAutoLocation(double lat, double lng, String addr, String sourceUrl) {
         String signature = String.format(Locale.US, "%.6f,%.6f|%s", lat, lng, addr);
-        if (signature.equals(lastCapturedSignature)) {
-            return;
+        synchronized (this) {
+            if (signature.equals(lastCapturedSignature)) {
+                return;
+            }
+            lastCapturedSignature = signature;
         }
-        lastCapturedSignature = signature;
         try {
             getSignPrefs()
                     .edit()

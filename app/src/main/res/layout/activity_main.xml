@@ -481,6 +481,16 @@
                             android:textAllCaps="false"
                             android:textColor="@color/ios_label" />
                     </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btn_exam_trigger_auto"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/tiku_mode_chip_inactive"
+                        android:text="全自动（进入题目页自动搜题、翻题时再次触发）"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ios_label" />
                 </LinearLayout>
 
                 <LinearLayout

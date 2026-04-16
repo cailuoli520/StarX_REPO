@@ -146,6 +146,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val EXAM_TRIGGER_VOLUME_DOWN = "volume_down"
         private const val EXAM_TRIGGER_VOLUME_UP = "volume_up"
         private const val EXAM_TRIGGER_VOLUME_UP_DOWN = "volume_up_down"
+        private const val EXAM_TRIGGER_AUTO = "auto"
     }
 
     private var mService: XposedService? = null
@@ -503,6 +504,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.btnExamTriggerVolumeDown.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_DOWN) }
         binding.btnExamTriggerVolumeUp.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP) }
         binding.btnExamTriggerVolumeCombo.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP_DOWN) }
+        binding.btnExamTriggerAuto.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_AUTO) }
 
         binding.switchAutoSignTarget.setOnCheckedChangeListener { _, isChecked ->
             if (locationLoading) return@setOnCheckedChangeListener
@@ -648,9 +650,11 @@ class MainActivity : Activity(), App.ServiceStateListener {
         setExamTriggerButtonState(binding.btnExamTriggerVolumeDown, mode == EXAM_TRIGGER_VOLUME_DOWN)
         setExamTriggerButtonState(binding.btnExamTriggerVolumeUp, mode == EXAM_TRIGGER_VOLUME_UP)
         setExamTriggerButtonState(binding.btnExamTriggerVolumeCombo, mode == EXAM_TRIGGER_VOLUME_UP_DOWN)
+        setExamTriggerButtonState(binding.btnExamTriggerAuto, mode == EXAM_TRIGGER_AUTO)
         binding.textExamTriggerStatus.text = when (mode) {
             EXAM_TRIGGER_VOLUME_UP -> "实体键触发：音量 +。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
             EXAM_TRIGGER_VOLUME_UP_DOWN -> "实体键触发：先按音量 +，再按音量 -。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
+            EXAM_TRIGGER_AUTO -> "全自动搜题：进入题目页后自动发起搜题，翻到下一题会再次自动触发，无需按键。"
             else -> "实体键触发：音量 -。仅在题目页注入判定通过后拦截，不再注入悬浮按钮。"
         }
     }
@@ -659,6 +663,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         return when (rawMode) {
             EXAM_TRIGGER_VOLUME_UP -> EXAM_TRIGGER_VOLUME_UP
             EXAM_TRIGGER_VOLUME_UP_DOWN -> EXAM_TRIGGER_VOLUME_UP_DOWN
+            EXAM_TRIGGER_AUTO -> EXAM_TRIGGER_AUTO
             else -> EXAM_TRIGGER_VOLUME_DOWN
         }
     }
