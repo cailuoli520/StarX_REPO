@@ -1473,9 +1473,26 @@ public class ExamHook {
         mainHandler.post(() -> showStatusOverlay(webView.getContext(), message.trim(), safeDurationMs));
     }
 
+    private static final String[] UI_SCRIPT_EXPECTED_MARKERS = new String[]{
+            "var btn=document.createElement('div');",
+            "document.body.appendChild(btn);",
+            "btn.onclick=function(){btn.innerHTML='\\uD83D\\uDD12 \\u641C\\u9898\\u4E2D';btn.style.pointerEvents='none';doSearch();};"
+    };
+
+    /**
+     * 保底 polyfill —— 当服务端 JS 形态漂移导致所有预期模式都没命中时注入。
+     * 保证 window.__starxTriggerSearch 可用（触发一次 doSearch），避免自动/实体键触发路径哑火。
+     */
+    private static final String INJECT_UI_FALLBACK =
+            ";(function(){try{" +
+            "if(typeof window.__starxTriggerSearch==='function')return;" +
+            "window.__starxHasSearchTarget=function(){try{return typeof getQuestions==='function'&&getQuestions().length?1:0;}catch(e){return 0;}};" +
+            "window.__starxTriggerSearch=function(){try{if(typeof doSearch==='function'){doSearch();return 'ok';}return 'missing:doSearch';}catch(e){return 'err:'+e.message;}};" +
+            "}catch(_e){}})();";
+
     private static String normalizeInjectedUiScript(String script) {
         if (script == null || script.isEmpty()) return "";
-        return script
+        String mutated = script
                 .replace("var btn=document.createElement('div');", "var btn={innerHTML:'',style:{pointerEvents:'auto',bottom:'0px'}};")
                 .replace("document.body.appendChild(btn);", "")
                 .replace("var toast=document.createElement('div');", "var toast={style:{display:'none',bottom:'0px'},textContent:''};")
@@ -1494,6 +1511,21 @@ public class ExamHook {
                 .replace("🔍 搜题", "搜题")
                 .replace("🔍搜题", "搜题")
                 .replace("私密搜题", "搜题");
+
+        // 如果核心模式全部没命中，说明服务端 JS 结构已变；记日志并追加 polyfill
+        int matched = 0;
+        for (String marker : UI_SCRIPT_EXPECTED_MARKERS) {
+            if (script.contains(marker)) matched++;
+        }
+        if (matched == 0) {
+            Logx.w("ExamHook: injected UI script markers all missed — applying fallback polyfill");
+            return mutated + INJECT_UI_FALLBACK;
+        }
+        if (matched < UI_SCRIPT_EXPECTED_MARKERS.length) {
+            Logx.w("ExamHook: injected UI script markers partial match " + matched + "/" + UI_SCRIPT_EXPECTED_MARKERS.length);
+            return mutated + INJECT_UI_FALLBACK;
+        }
+        return mutated;
     }
 
     /** 将 Java 字符串转为 JS 字符串字面量（含引号），可安全嵌入 evaluateJavascript */

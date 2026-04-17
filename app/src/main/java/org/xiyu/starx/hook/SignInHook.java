@@ -1262,6 +1262,10 @@ public class SignInHook {
     }
 
     private void attemptVipDirectPhotoSign(WebView webView, String activeId, String objectId) {
+        if (webView == null || !webView.isAttachedToWindow() || activeId == null || activeId.isEmpty()
+                || objectId == null || objectId.isEmpty()) {
+            return;
+        }
         try {
             String currentUrl = webView.getUrl();
             if (!isSignUrl(currentUrl)) {
@@ -1311,6 +1315,10 @@ public class SignInHook {
     }
 
     private void attemptVipDirectCodeSign(WebView webView, String activeId, String signCode, String typeLabel) {
+        if (webView == null || !webView.isAttachedToWindow() || activeId == null || activeId.isEmpty()
+                || signCode == null || signCode.isEmpty()) {
+            return;
+        }
         try {
             String currentUrl = webView.getUrl();
             if (!isSignUrl(currentUrl)) {
@@ -1507,6 +1515,11 @@ public class SignInHook {
         if (window == null) {
             autoSubmittedNativeDialogs.remove(dialogId);
             return;
+        }
+        // 对话框消失时清理集合条目，避免同一对话框对象复用或长会话内缓慢泄漏
+        try {
+            dialog.setOnDismissListener(d -> autoSubmittedNativeDialogs.remove(dialogId));
+        } catch (Throwable ignored) {
         }
         window.getDecorView().postDelayed(() -> autoSubmitNativePasswordDialog(dialog, dialogId, code), 180L);
     }
