@@ -53,6 +53,10 @@ public class ExamHook {
     private static final String CONFIG_PREFS = "config";
     private static final String KEY_EXAM_ENABLED = "hook_exam_enabled";
     private static final String KEY_EXAM_TRIGGER = "hook_exam_trigger";
+    private static final String KEY_EXAM_HTML_PIPELINE = "hook_exam_html_pipeline";
+    private static final long HTML_PIPELINE_ANSWER_TIMEOUT_MS = 12000L;
+    private static final long HTML_PIPELINE_CAPTURE_DELAY_MS = 2200L;
+    private static final int HTML_PIPELINE_MAX_QUESTIONS = 48;
     private static final String PROMPT_BRIDGE_DEFAULT = "StarXBridgeV1";
     private static final long PROMPT_QUERY_TIMEOUT_MS = 6500L;
     private static final long PROMPT_IMAGE_QUERY_TIMEOUT_MS = 9000L;
@@ -93,6 +97,8 @@ public class ExamHook {
     private final java.util.Set<Integer> registeredWebViews = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<Class<?>> hookedPromptClients = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Map<Integer, WeakReference<WebView>> activeExamWebViews = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<String> htmlPipelineSolvedStems = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Map<Integer, Long> lastHtmlPipelineRunAt = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile long lastVolumeUpPressedAt = 0L;
 
     /**
@@ -488,6 +494,8 @@ public class ExamHook {
                     ensureBridgeRegistered(wv);
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 1500);
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 4000);
+                    // HTML 管线：抓 outerHTML → jsoup 解析 → 查答 → 自动填写
+                    mainHandler.postDelayed(() -> launchHtmlPipeline(wv), HTML_PIPELINE_CAPTURE_DELAY_MS);
                 } else if (url != null && shouldProbeExamPage(url)) {
                     WebView wv = (WebView) chain.getArg(0);
                     ensureBridgeRegistered(wv);
@@ -1428,6 +1436,199 @@ public class ExamHook {
      * 若页面没有题块或找不到答案则静默失败，外层 overlay 仍会提示用户。
      */
     private void applyOcrAnswerToActiveWebView(String ocrText, String answer) {
+        applyAnswerToQuestionByText(ocrText, answer, org.xiyu.starx.util.HtmlQuestionExtractor.Type.UNKNOWN, -1);
+    }
+
+    // ==========================================================
+    //  HTML 管线：outerHTML → jsoup → AnswerProvider → JS 填答
+    // ==========================================================
+
+    private boolean isHtmlPipelineEnabled() {
+        if (!isExamEnabled()) return false;
+        try {
+            var prefs = module.getRemotePreferences(CONFIG_PREFS);
+            return prefs.getBoolean(KEY_EXAM_HTML_PIPELINE, true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** 外部入口：onPageFinished 中，考试/作业页命中后触发。 */
+    private void launchHtmlPipeline(WebView wv) {
+        if (wv == null || !isHtmlPipelineEnabled()) return;
+        int id = System.identityHashCode(wv);
+        long now = android.os.SystemClock.uptimeMillis();
+        Long last = lastHtmlPipelineRunAt.get(id);
+        if (last != null && now - last < 3000L) {
+            return; // 3s 内重复触发跳过
+        }
+        lastHtmlPipelineRunAt.put(id, now);
+        try {
+            wv.evaluateJavascript("(function(){try{return document.documentElement.outerHTML;}catch(e){return '';}})()",
+                    value -> {
+                        String html = decodeJsStringLiteral(value);
+                        if (html == null || html.length() < 200) {
+                            Logx.i("ExamHook: html pipeline — page too small, skip");
+                            return;
+                        }
+                        promptExecutor.submit(() -> runHtmlPipeline(wv, html));
+                    });
+        } catch (Throwable t) {
+            Logx.w("ExamHook: html pipeline capture failed: " + t.getMessage());
+        }
+    }
+
+    /** 在后台线程执行：解析题目 → 逐题查答 → 主线程注入选择。 */
+    private void runHtmlPipeline(WebView wv, String html) {
+        try {
+            List<org.xiyu.starx.util.HtmlQuestionExtractor.Question> questions =
+                    org.xiyu.starx.util.HtmlQuestionExtractor.parse(html);
+            if (questions == null || questions.isEmpty()) return;
+            int total = Math.min(questions.size(), HTML_PIPELINE_MAX_QUESTIONS);
+            int solved = 0;
+            for (int i = 0; i < total; i++) {
+                if (Thread.currentThread().isInterrupted()) break;
+                var q = questions.get(i);
+                if (q.stem == null || q.stem.isEmpty()) continue;
+                String dedupKey = q.stem + "|" + (q.options == null ? 0 : q.options.size());
+                if (!htmlPipelineSolvedStems.add(dedupKey)) {
+                    continue; // 本会话内已查过
+                }
+                String optionsText = q.optionsAsText();
+                int typeCode = q.type.legacyCode();
+                AnswerProvider.Result r = answerProvider.queryWithTimeout(
+                        q.stem, typeCode, optionsText, null, HTML_PIPELINE_ANSWER_TIMEOUT_MS);
+                if (r == null || r.answer == null || r.answer.trim().isEmpty()) {
+                    Logx.i("ExamHook: html pipeline miss → " + truncate(q.stem, 40));
+                    continue;
+                }
+                solved++;
+                String stem = q.stem;
+                String ans = r.answer;
+                var type = q.type;
+                int idx = i;
+                Logx.i("★ HTML管线[" + r.source + "] #" + (i + 1) + " => " + ans);
+                mainHandler.post(() -> applyAnswerToQuestionByText(stem, ans, type, idx));
+            }
+            Logx.i("ExamHook: html pipeline done, solved " + solved + "/" + total);
+        } catch (Throwable t) {
+            Logx.w("ExamHook: html pipeline run failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 按题干文本定位题块并点选/填写答案；增强了 Zepto 兼容（dispatch touchend + click）。
+     * indexHint >= 0 时作为位置回退（当题干无法唯一匹配时按顺序取第 n 个题块）。
+     */
+    private void applyAnswerToQuestionByText(String stemText,
+                                             String answer,
+                                             org.xiyu.starx.util.HtmlQuestionExtractor.Type type,
+                                             int indexHint) {
+        if (answer == null || answer.trim().isEmpty()) return;
+        WebView webView = pickActiveExamWebView();
+        if (webView == null) return;
+        try {
+            String jsStem = jsonEscapeForJs(stemText == null ? "" : stemText);
+            String jsAns = jsonEscapeForJs(answer);
+            String jsType = jsonEscapeForJs(type == null ? "unknown" : type.name().toLowerCase(Locale.ROOT));
+            String script =
+                "(function(){try{" +
+                "var stem=" + jsStem + ",ans=" + jsAns + ",type=" + jsType + ",idxHint=" + indexHint + ";" +
+                "function norm(s){return String(s||'').replace(/\\s+/g,'').toLowerCase();}" +
+                "function stripPrefix(s){return String(s||'').replace(/^\\s*[A-Za-z][\\.、:：\\s]\\s*/,'').trim();}" +
+                "function firePress(el){if(!el)return;try{var r=el.getBoundingClientRect();var t=new Touch({identifier:Date.now(),target:el,clientX:r.left+2,clientY:r.top+2});var te=new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[t]});el.dispatchEvent(te);}catch(_e){}try{el.click();}catch(_e){}}" +
+                "var roots=document.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.answer-item');" +
+                "if(!roots||!roots.length)return 'no_roots';" +
+                "var best=null,bestScore=0;var stemN=norm(stem);" +
+                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title,.answer-title,h2.titType,.timuStyle');var t=norm(te?te.textContent:r.textContent);if(!t)continue;var score=0;if(stemN&&(t.indexOf(stemN)>=0||stemN.indexOf(t)>=0))score=3;else{var c=0,w=stemN.length;for(var k=0;k<w&&k<40;k++){if(t.indexOf(stemN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,40));}if(score>bestScore){best=r;bestScore=score;}}" +
+                "if(!best && idxHint>=0 && idxHint<roots.length)best=roots[idxHint];" +
+                "if(!best)return 'no_match';" +
+                "if(type==='fill_blank'||type==='short_answer'){" +
+                "var inputs=best.querySelectorAll('input[name^=blank],textarea[name^=blank],input.ans_input,textarea.ans_input,div.ueditor-container textarea');" +
+                "if(!inputs.length)inputs=best.querySelectorAll('input[type=text],textarea');" +
+                "var parts=String(ans).split(/[\\|｜]/);" +
+                "var filled=0;for(var i=0;i<inputs.length;i++){var v=(parts[i]||parts[parts.length-1]||'').trim();if(!v)continue;var el=inputs[i];try{el.focus();el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));filled++;}catch(_e){}}" +
+                "return 'fill_blank='+filled;" +
+                "}" +
+                "if(type==='true_false'){" +
+                "var t=String(ans).trim();var pos=(t==='对'||t==='正确'||t==='T'||t==='true'||t==='√'||t==='Y'||t==='yes'||t.toLowerCase()==='true');" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,.optionUl li');" +
+                "for(var i=0;i<opts.length;i++){var raw=(opts[i].innerText||opts[i].textContent||'').trim();var isT=/对|正确|true|√|Yes/i.test(raw);var isF=/错|错误|false|×|No/i.test(raw);if((pos&&isT)||(!pos&&isF)){firePress(opts[i].querySelector('input,label,a,span')||opts[i]);return 'tf_clicked';}}" +
+                "return 'tf_no_match';" +
+                "}" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.singleChoice,div.mulChoice,.singleoption,.optionUl li');" +
+                "if(!opts||!opts.length)return 'no_options';" +
+                "var letters=(String(ans).match(/[A-Za-z]/g)||[]).map(function(c){return c.toUpperCase();});" +
+                "var ansText=norm(stripPrefix(ans));var clicked=0;" +
+                "for(var i=0;i<opts.length;i++){" +
+                "var opt=opts[i];var raw=(opt.innerText||opt.textContent||'').trim();var letterMatch=(raw.match(/^\\s*([A-Za-z])[\\.、:：\\s]/)||[])[1];letterMatch=letterMatch?letterMatch.toUpperCase():'';" +
+                "var textN=norm(stripPrefix(raw));var hit=false;" +
+                "if(letterMatch&&letters.indexOf(letterMatch)>=0)hit=true;" +
+                "else if(ansText&&textN&&(textN===ansText||textN.indexOf(ansText)>=0||ansText.indexOf(textN)>=0))hit=true;" +
+                "if(hit){firePress(opt.querySelector('input,label,a,span')||opt);clicked++;}" +
+                "}" +
+                "return 'clicked='+clicked;" +
+                "}catch(e){return 'err:'+e.message;}})()";
+            webView.evaluateJavascript(script, value -> Logx.i("ExamHook: answer apply #" + indexHint + " => " + value));
+        } catch (Throwable t) {
+            Logx.w("ExamHook: answer apply failed: " + t.getMessage());
+        }
+    }
+
+    private static String decodeJsStringLiteral(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.isEmpty() || "null".equals(s)) return null;
+        if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
+            s = s.substring(1, s.length() - 1);
+        }
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                switch (n) {
+                    case 'n': sb.append('\n'); break;
+                    case 'r': sb.append('\r'); break;
+                    case 't': sb.append('\t'); break;
+                    case 'b': sb.append('\b'); break;
+                    case 'f': sb.append('\f'); break;
+                    case '"': sb.append('"'); break;
+                    case '\'': sb.append('\''); break;
+                    case '\\': sb.append('\\'); break;
+                    case '/': sb.append('/'); break;
+                    case 'u':
+                        if (i + 4 < s.length()) {
+                            try {
+                                sb.append((char) Integer.parseInt(s.substring(i + 1, i + 5), 16));
+                                i += 4;
+                            } catch (NumberFormatException nfe) {
+                                sb.append(n);
+                            }
+                        } else {
+                            sb.append(n);
+                        }
+                        break;
+                    default: sb.append(n);
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String truncate(String s, int n) {
+        if (s == null) return "";
+        return s.length() <= n ? s : s.substring(0, n) + "…";
+    }
+
+    /**
+     * [历史占位] 原 OCR→WebView 答题实现，已由 applyAnswerToQuestionByText 统一替代。
+     * 保留该名以便日志 grep 和 diff 审计。
+     */
+    @SuppressWarnings("unused")
+    private void applyOcrAnswerToActiveWebView_legacyPlaceholder(String ocrText, String answer) {
         if (answer == null || answer.trim().isEmpty()) return;
         WebView webView = pickActiveExamWebView();
         if (webView == null) return;

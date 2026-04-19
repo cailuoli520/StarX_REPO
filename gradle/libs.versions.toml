@@ -3,6 +3,7 @@ agp = "9.0.1"
 xposed-api = "101.0.0"
 xposed-service = "101.0.0"
 osmdroid = "6.1.20"
+jsoup = "1.17.2"
 
 [plugins]
 agp-app = { id = "com.android.application", version.ref = "agp" }
@@ -11,3 +12,4 @@ agp-app = { id = "com.android.application", version.ref = "agp" }
 libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "xposed-api" }
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "xposed-service" }
 osmdroid = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
