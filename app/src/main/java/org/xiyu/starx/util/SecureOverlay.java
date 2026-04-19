@@ -48,31 +48,68 @@ public class SecureOverlay {
                         | WindowManager.LayoutParams.FLAG_SECURE,
                 PixelFormat.TRANSLUCENT);
 
-        params.token = activity.getWindow().getAttributes().token;
+        // 对 Activity 子窗口而言，正确的 token 是 decorView 的 windowToken，
+        // getAttributes().token 在某些 ROM / Android 14+ 上会返回无效 BinderProxy。
+        android.os.IBinder token = null;
+        try {
+            View decor = activity.getWindow().getDecorView();
+            token = decor.getWindowToken();
+        } catch (Throwable ignored) {}
+        if (token == null) {
+            token = activity.getWindow().getAttributes().token;
+        }
+        params.token = token;
         params.gravity = gravity;
         params.x = x;
         params.y = y;
 
-        // Android 12+ 额外标记: 排除出屏幕捕获
-        if (Build.VERSION.SDK_INT >= 34) {
+        try {
+            wm.addView(view, params);
+            Logx.i("SecureOverlay: added secure view (gravity=" + gravity + ")");
+            return params;
+        } catch (Throwable t) {
+            Logx.w("SecureOverlay: TYPE_APPLICATION_PANEL failed, fallback to decor child: " + t.getMessage());
+            // 回退：把 view 作为 decorView 的子 View 挂上；虽然失去独立 FLAG_SECURE，
+            // 但 Activity 会话期间 setFlags(FLAG_SECURE) 能同样阻断截屏。
             try {
-                // API 34: Window.setContentSensitivity / CONTENT_SENSITIVITY_AUTO
-                // 这里通过 FLAG_SECURE 已实现同等效果
-            } catch (Throwable ignored) {}
+                android.view.Window w = activity.getWindow();
+                w.setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+                        WindowManager.LayoutParams.FLAG_SECURE);
+                android.widget.FrameLayout.LayoutParams flp =
+                        new android.widget.FrameLayout.LayoutParams(
+                                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
+                flp.gravity = gravity;
+                flp.leftMargin = (gravity & Gravity.START) != 0 ? x : 0;
+                flp.rightMargin = (gravity & Gravity.END) != 0 ? x : 0;
+                flp.topMargin = (gravity & Gravity.TOP) != 0 ? y : 0;
+                flp.bottomMargin = (gravity & Gravity.BOTTOM) != 0 ? y : 0;
+                android.view.ViewGroup decor = (android.view.ViewGroup) w.getDecorView();
+                decor.addView(view, flp);
+                Logx.i("SecureOverlay: decor-child fallback attached (Activity window forced FLAG_SECURE)");
+            } catch (Throwable t2) {
+                Logx.w("SecureOverlay: decor-child fallback failed: " + t2.getMessage());
+            }
+            return params;
         }
-
-        wm.addView(view, params);
-        Logx.i("SecureOverlay: added secure view (gravity=" + gravity + ")");
-        return params;
     }
 
     /**
      * 从窗口移除安全浮窗
      */
     public static void removeSecureView(Activity activity, View view) {
+        // 先尝试作为 WindowManager 子窗口移除；若 view 其实挂在 decorView 上，
+        // 则退而使用 parent.removeView。
         try {
             WindowManager wm = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
             wm.removeViewImmediate(view);
+            return;
+        } catch (Throwable ignored) {}
+        try {
+            android.view.ViewParent p = view.getParent();
+            if (p instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) p).removeView(view);
+            }
         } catch (Throwable ignored) {}
     }
 

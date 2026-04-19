@@ -1477,9 +1477,13 @@ public class ExamHook {
         if (wv == null) return;
         try {
             Activity act = SecureOverlay.asActivity(wv.getContext());
-            if (act == null) return;
+            if (act == null) {
+                Logx.w("ExamHook: AI button - no Activity from WebView ctx=" + wv.getContext());
+                return;
+            }
             int actId = System.identityHashCode(act);
             if (aiButtonAttached.contains(actId)) return;
+            Logx.i("ExamHook: AI button - attaching to " + act.getClass().getSimpleName() + "#" + Integer.toHexString(actId));
 
             final WebView webViewRef = wv;
             android.widget.LinearLayout bar = new android.widget.LinearLayout(act);
@@ -1690,8 +1694,21 @@ public class ExamHook {
                 String ans = r.answer;
                 var type = q.type;
                 int idx = i;
-                Logx.i("★ HTML管线[" + r.source + "] #" + (i + 1) + " => " + ans);
-                mainHandler.post(() -> applyAnswerToQuestionByText(stem, ans, type, idx));
+                int questionNo = i + 1;
+                String src = r.source;
+                Logx.i("★ HTML管线[" + src + "] #" + questionNo + " => " + ans);
+                mainHandler.post(() -> {
+                    applyAnswerToQuestionByText(stem, ans, type, idx);
+                    // 无论自动填写是否成功，都用 Toast 把答案告知用户。
+                    try {
+                        WebView v = pickActiveExamWebView();
+                        if (v != null) {
+                            Toast.makeText(v.getContext(),
+                                    "StarX · 第" + questionNo + "题答案：" + ans + " ｜ " + src,
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    } catch (Throwable ignored) {}
+                });
             }
             Logx.i("ExamHook: html pipeline done, solved " + solved + "/" + total);
         } catch (Throwable t) {
@@ -1720,10 +1737,10 @@ public class ExamHook {
                 "function norm(s){return String(s||'').replace(/\\s+/g,'').toLowerCase();}" +
                 "function stripPrefix(s){return String(s||'').replace(/^\\s*[A-Za-z][\\.、:：\\s]\\s*/,'').trim();}" +
                 "function firePress(el){if(!el)return;try{var r=el.getBoundingClientRect();var t=new Touch({identifier:Date.now(),target:el,clientX:r.left+2,clientY:r.top+2});var te=new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[t]});el.dispatchEvent(te);}catch(_e){}try{el.click();}catch(_e){}}" +
-                "var roots=document.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.subjectDet,.answer-item');" +
+                "var roots=document.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.pad30,.wid750,.subjectDet,.answer-item');" +
                 "if(!roots||!roots.length)return 'no_roots';" +
                 "var best=null,bestScore=0;var stemN=norm(stem);" +
-                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title,.answer-title,h2.titType,.timuStyle');var t=norm(te?te.textContent:r.textContent);if(!t)continue;var score=0;if(stemN&&(t.indexOf(stemN)>=0||stemN.indexOf(t)>=0))score=3;else{var c=0,w=stemN.length;for(var k=0;k<w&&k<40;k++){if(t.indexOf(stemN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,40));}if(score>bestScore){best=r;bestScore=score;}}" +
+                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title,.answer-title,h2.titType,.timuStyle,div.ans-cc.timuStyle');var t=norm(te?te.textContent:r.textContent);if(!t)continue;var score=0;if(stemN&&(t.indexOf(stemN)>=0||stemN.indexOf(t)>=0))score=3;else{var c=0,w=stemN.length;for(var k=0;k<w&&k<40;k++){if(t.indexOf(stemN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,40));}if(score>bestScore){best=r;bestScore=score;}}" +
                 "if(!best && idxHint>=0 && idxHint<roots.length)best=roots[idxHint];" +
                 "if(!best)return 'no_match';" +
                 "if(type==='fill_blank'||type==='short_answer'){" +
@@ -1735,20 +1752,24 @@ public class ExamHook {
                 "}" +
                 "if(type==='true_false'){" +
                 "var t=String(ans).trim();var pos=(t==='对'||t==='正确'||t==='T'||t==='true'||t==='√'||t==='Y'||t==='yes'||t.toLowerCase()==='true');" +
-                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,.optionUl li');" +
-                "for(var i=0;i<opts.length;i++){var raw=(opts[i].innerText||opts[i].textContent||'').trim();var isT=/对|正确|true|√|Yes/i.test(raw);var isF=/错|错误|false|×|No/i.test(raw);if((pos&&isT)||(!pos&&isF)){firePress(opts[i].querySelector('input,label,a,span')||opts[i]);return 'tf_clicked';}}" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,.optionUl li,div.Answer,div.clearfix.Answer');" +
+                "for(var i=0;i<opts.length;i++){var raw=(opts[i].innerText||opts[i].textContent||'').trim();var isT=/对|正确|true|√|Yes/i.test(raw);var isF=/错|错误|false|×|No/i.test(raw);if((pos&&isT)||(!pos&&isF)){firePress(opts[i].querySelector('span.check,span.choose,span.dxcheck,input,label,a,span')||opts[i]);return 'tf_clicked';}}" +
                 "return 'tf_no_match';" +
                 "}" +
-                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.singleChoice,div.mulChoice,.singleoption,.optionUl li');" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.singleChoice,div.mulChoice,.singleoption,.optionUl li,div.Answer,div.clearfix.Answer');" +
                 "if(!opts||!opts.length)return 'no_options';" +
                 "var letters=(String(ans).match(/[A-Za-z]/g)||[]).map(function(c){return c.toUpperCase();});" +
                 "var ansText=norm(stripPrefix(ans));var clicked=0;" +
                 "for(var i=0;i<opts.length;i++){" +
-                "var opt=opts[i];var raw=(opt.innerText||opt.textContent||'').trim();var letterMatch=(raw.match(/^\\s*([A-Za-z])[\\.、:：\\s]/)||[])[1];letterMatch=letterMatch?letterMatch.toUpperCase():'';" +
+                "var opt=opts[i];" +
+                "var keyEl=opt.querySelector('span.check,span.choose,span.dxcheck');" +
+                "var keyTxt=keyEl?(keyEl.innerText||keyEl.textContent||'').trim().toUpperCase():'';" +
+                "var raw=(opt.innerText||opt.textContent||'').trim();" +
+                "var letterMatch=keyTxt?keyTxt.charAt(0):((raw.match(/^\\s*([A-Za-z])[\\.、:：\\s]/)||[])[1]||'');letterMatch=letterMatch?letterMatch.toUpperCase():'';" +
                 "var textN=norm(stripPrefix(raw));var hit=false;" +
                 "if(letterMatch&&letters.indexOf(letterMatch)>=0)hit=true;" +
                 "else if(ansText&&textN&&(textN===ansText||textN.indexOf(ansText)>=0||ansText.indexOf(textN)>=0))hit=true;" +
-                "if(hit){firePress(opt.querySelector('input,label,a,span')||opt);clicked++;}" +
+                "if(hit){firePress(keyEl||opt.querySelector('input,label,a,span')||opt);clicked++;}" +
                 "}" +
                 "return 'clicked='+clicked;" +
                 "}catch(e){return 'err:'+e.message;}})()";
