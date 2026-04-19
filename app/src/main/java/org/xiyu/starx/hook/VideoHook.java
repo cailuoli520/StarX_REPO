@@ -86,6 +86,13 @@ public class VideoHook {
     /** 已发送过快速完成的视频标识 (objectId_chapterId)，防止重复 */
     private final Set<String> completedVideos = Collections.synchronizedSet(new HashSet<>());
 
+    // 诊断：最近一次真实 S() 调用的参数/this（用于无包装密钥时复用）
+    private volatile Object[] lastSArgs;
+    private volatile Object lastSVm;
+    private volatile Method sMethodRef;
+    // 服务端 {"isPassed":true} 出现过则认为真正完成；每次批量重置
+    private volatile boolean lastBatchPassed;
+
     public VideoHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
@@ -301,8 +308,25 @@ public class VideoHook {
 
             // 定位 u() 方法: 返回 CourseVideo, 无参数
             Method getVideoMethod = findGetVideoMethod(courseVmClass, courseVideoClass);
+            sMethodRef = sMethod;
+            sMethod.setAccessible(true);
 
             module.hook(sMethod).intercept(chain -> {
+                // 诊断：输出所有参数，确认 S() 的参数结构
+                try {
+                    java.util.List<Object> a = chain.getArgs();
+                    StringBuilder sb = new StringBuilder("VideoHook[S-call] ");
+                    for (int i = 0; i < a.size(); i++) {
+                        Object v = a.get(i);
+                        sb.append("#").append(i).append("=")
+                          .append(v == null ? "null" : (v.getClass().getSimpleName() + ":" + String.valueOf(v).replaceAll("\\s+", " ")))
+                          .append("  ");
+                    }
+                    Logx.i(sb.toString());
+                    // 捕获最近一次真实 S() 调用上下文（给手动完成复用）
+                    lastSArgs = a.toArray();
+                    lastSVm = chain.getThisObject();
+                } catch (Throwable ignored) {}
                 boolean timeModEnabled = false;
                 try {
                     var prefs = module.getRemotePreferences("config");
@@ -583,11 +607,19 @@ public class VideoHook {
             Toast.makeText(ctx, "正在提交...", Toast.LENGTH_SHORT).show();
             fireBatchComplete(courseVideo, courseVideoClass, () -> {
                 new Handler(Looper.getMainLooper()).post(() -> {
-                    Toast.makeText(ctx, "✓ 视频任务已完成", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(ctx, "✓ 视频任务已完成（服务端已接受）", Toast.LENGTH_SHORT).show();
                     // ★ 通过 EventBus 通知章节页面更新任务点状态
                     postCompletionEvent(fVideoJson);
                 });
             }, videoKey);
+            // 如果 onSuccess 未触发（服务端 isPassed=false），2 分钟内给用户一个反馈
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                if (!lastBatchPassed) {
+                    Toast.makeText(ctx,
+                            "⚠ 服务端未接受（签名过期，换设备会同步失败）",
+                            Toast.LENGTH_LONG).show();
+                }
+            }, 15_000);
         } catch (Throwable t) {
             Logx.w("VideoHook: complete click failed: " + t.getMessage());
             Toast.makeText(ctx, "操作失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
@@ -696,6 +728,7 @@ public class VideoHook {
     private void fireBatchComplete(Object courseVideo, Class<?> cvClass,
                                    Runnable onSuccess, String videoKey) {
         new Thread(() -> {
+            lastBatchPassed = false;
             try {
                 String reportUrl = str(cvClass, courseVideo, "getReportUrl");
                 if (reportUrl == null || reportUrl.isEmpty()) {
@@ -741,8 +774,13 @@ public class VideoHook {
                 sendReport(reportUrl, otherInfo, String.valueOf(durationSec), durationSec,
                         jobid, clipTime, clazzId, objectId, puid, 4, rt, durationSec);
 
-                Logx.i("VideoHook: batch complete sent (d=" + durationSec + "s)");
-                if (onSuccess != null) onSuccess.run();
+                Logx.i("VideoHook: batch complete sent (d=" + durationSec + "s), serverPassed=" + lastBatchPassed);
+                if (!lastBatchPassed) {
+                    // 服务端未接受 → 回退本地状态，让用户看到真实失败
+                    if (videoKey != null) completedVideos.remove(videoKey);
+                    Logx.w("VideoHook: server rejected (isPassed=false, likely enc/签名过期 for v6.7.4+), need to keep watching naturally");
+                }
+                if (onSuccess != null && lastBatchPassed) onSuccess.run();
             } catch (Throwable t) {
                 if (videoKey != null) completedVideos.remove(videoKey);
                 Logx.w("VideoHook: batch complete failed: " + t.getMessage());
@@ -845,6 +883,9 @@ public class VideoHook {
                     String truncated = bodyStr.length() > 200
                             ? bodyStr.substring(0, 200) : bodyStr;
                     Logx.i("VideoHook: response body: " + truncated);
+                    if (bodyStr.contains("\"isPassed\":true") || bodyStr.contains("\"isPassed\": true")) {
+                        lastBatchPassed = true;
+                    }
                 }
             }
         } catch (Throwable ignored) {}

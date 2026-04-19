@@ -91,11 +91,15 @@ public final class HtmlQuestionExtractor {
             Elements exam = doc.select("div.singleQuesId.ans-cc-exam");
             Elements quiz = doc.select("div.answer-item");
             Elements work = doc.select("div.wid750.singleQuesId, div.pad30");
-            int ne = exam.size(), nq = quiz.size(), nw = work.size();
+            // 章节测验（mworkspecial 页面）：div.Py-mian1.singleQuesId
+            Elements chapter = doc.select("div.Py-mian1.singleQuesId");
+            int ne = exam.size(), nq = quiz.size(), nw = work.size(), nc = chapter.size();
 
             Elements pick;
             String mode;
-            if (ne > 0 && ne >= nq && ne >= nw) {
+            if (nc > 0 && nc >= ne && nc >= nq && nc >= nw) {
+                pick = chapter; mode = "chapter";
+            } else if (ne > 0 && ne >= nq && ne >= nw) {
                 pick = exam; mode = "exam";
             } else if (nq > 0 && nq >= nw) {
                 pick = quiz; mode = "quiz";
@@ -106,6 +110,15 @@ public final class HtmlQuestionExtractor {
                 List<Question> generic = parseGeneric(doc);
                 Logx.i("HtmlQuestionExtractor: mode=generic parsed=" + generic.size()
                         + " (exam=0 quiz=0 work=0, html.len=" + html.length() + ")");
+                if (generic.isEmpty()) {
+                    // 诊断：解析失败时简要 dump
+                    try {
+                        Element body = doc.body();
+                        String bodyText = body != null ? body.text() : "";
+                        if (bodyText.length() > 200) bodyText = bodyText.substring(0, 200);
+                        Logx.i("HtmlQuestionExtractor[DBG] bodyText=" + bodyText);
+                    } catch (Throwable ignored) {}
+                }
                 return generic;
             }
 
@@ -117,6 +130,7 @@ public final class HtmlQuestionExtractor {
                     switch (mode) {
                         case "exam": q = parseExam(el); break;
                         case "quiz": q = parseQuiz(el); break;
+                        case "chapter": q = parseChapter(el); break;
                         default:     q = parseWork(el); break;
                     }
                     if (q == null || q.stem == null || q.stem.isEmpty()) continue;
@@ -195,6 +209,53 @@ public final class HtmlQuestionExtractor {
                 String key = keyEl != null ? keyEl.text().trim() : "";
                 String text = textEl != null ? textEl.text().trim() : item.text().trim();
                 if (!key.isEmpty() || !text.isEmpty()) list.add(new Option(key, text));
+            }
+            q.options = list;
+        }
+        return q;
+    }
+
+    // ---------- 章节测验页（mworkspecial / Py-mian1.singleQuesId） ----------
+    private static final Pattern CHAPTER_TITLE_PAT =
+            Pattern.compile("^\\s*(\\d+)\\.\\s*\\[([^\\]]+)\\]\\s*(.*)$", Pattern.DOTALL);
+
+    private static Question parseChapter(Element el) {
+        Element titleEl = el.selectFirst("div.Py-m1-title, .Py-m1-title, div.fontLabel");
+        if (titleEl == null) return null;
+        String raw = titleEl.text().trim();
+        Question q = new Question();
+        String stem = raw;
+        Matcher m = CHAPTER_TITLE_PAT.matcher(raw);
+        if (m.find()) {
+            try { q.index = Integer.parseInt(m.group(1)); } catch (Throwable ignored) {}
+            q.type = Type.fromTitle(m.group(2));
+            String body = m.group(3);
+            if (body != null) stem = body.trim();
+        } else {
+            q.index = extractIndex(raw);
+            q.type = Type.fromTitle(raw);
+        }
+        // 若题干里含"（）"或"____"，保留原状即可
+        q.stem = stem;
+
+        if (q.type == Type.FILL_BLANK) {
+            q.blankCount = Math.max(1, extractBlankCount(el));
+        } else if (q.type == Type.SHORT_ANSWER) {
+            q.options = Collections.emptyList();
+        } else {
+            // 选项：li.clearfix.more-choose-item（或 div.more-choose-item）
+            Elements items = el.select("li.more-choose-item, div.more-choose-item, .more-choose-item");
+            List<Option> list = new ArrayList<>();
+            int idx = 0;
+            for (Element item : items) {
+                Element descEl = item.selectFirst("div.choose-desc, .choose-desc, .workTextWrap");
+                String text = descEl != null ? descEl.text().trim() : item.text().trim();
+                // 尝试找显式字母（有些模板里 span.num 会带 "A"）
+                Element keyEl = item.selectFirst(".num, .option-letter, .before");
+                String key = keyEl != null ? keyEl.text().trim().replaceAll("[^A-Za-z]", "") : "";
+                if (key.isEmpty()) key = String.valueOf((char) ('A' + idx));
+                if (!text.isEmpty()) list.add(new Option(key, text));
+                idx++;
             }
             q.options = list;
         }
