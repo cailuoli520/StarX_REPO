@@ -19,6 +19,7 @@ import android.webkit.WebView;
 import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -496,6 +497,9 @@ public class ExamHook {
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 4000);
                     // HTML 管线：抓 outerHTML → jsoup 解析 → 查答 → 自动填写
                     mainHandler.postDelayed(() -> launchHtmlPipeline(wv), HTML_PIPELINE_CAPTURE_DELAY_MS);
+                    // 注入独立悬浮 AI 搜题按钮（带标签）
+                    mainHandler.postDelayed(() -> injectFloatingAiButton(wv), 1800);
+                    mainHandler.postDelayed(() -> injectFloatingAiButton(wv), 4200);
                 } else if (url != null && shouldProbeExamPage(url)) {
                     WebView wv = (WebView) chain.getArg(0);
                     ensureBridgeRegistered(wv);
@@ -612,6 +616,14 @@ public class ExamHook {
                     break;
                 case "notifyStatus":
                     notifyStatus(webView, payload.optString("message", ""), payload.optInt("durationMs", 0));
+                    break;
+                case "kickHtmlPipeline":
+                    // JS 侧按钮触发 HTML 管线（不走截屏/OCR），绕开旧 doSearch 的 MediaProjection 路径
+                    mainHandler.post(() -> {
+                        lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
+                        launchHtmlPipeline(webView);
+                    });
+                    result = "ok";
                     break;
                 case "log":
                     Logx.i("ExamHook[JS]: " + payload.optString("msg", ""));
@@ -902,6 +914,19 @@ public class ExamHook {
 
         @android.webkit.JavascriptInterface
         public void log(String msg) { Logx.i("ExamHook[JS]: " + msg); }
+
+        /** 手动按钮触发的 HTML 管线入口：抓 outerHTML → jsoup → AnswerProvider → 注入答案。 */
+        @android.webkit.JavascriptInterface
+        public void kickHtmlPipeline() {
+            try {
+                mainHandler.post(() -> {
+                    lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
+                    launchHtmlPipeline(webView);
+                });
+            } catch (Throwable t) {
+                Logx.w("ExamHook[JS→Java]: kickHtmlPipeline failed: " + t.getMessage());
+            }
+        }
     }
 
     private String queryAnswerWithImagesInternal(WebView webView,
@@ -1416,15 +1441,25 @@ public class ExamHook {
         if (webView == null) {
             return false;
         }
+        // 主路径：HTML 管线（jsoup 解析 + AnswerProvider 直答，不触发截屏/OCR，避免系统绿色录屏指示条）
         mainHandler.post(() -> {
+            try {
+                Toast.makeText(webView.getContext(), "StarX · AI 搜题中…", Toast.LENGTH_SHORT).show();
+            } catch (Throwable ignored) {}
+            // 让管线忽略最近节流，强制立刻跑
+            lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
+            launchHtmlPipeline(webView);
+        });
+        // 兜底：若服务端旧脚本仍存在（OCR 路径），稍后再触发一次；如 HTML 管线已命中则服务端脚本会按原逻辑去重
+        mainHandler.postDelayed(() -> {
             try {
                 webView.evaluateJavascript(
                         "(function(){try{return window.__starxTriggerSearch&&window.__starxTriggerSearch()||'missing';}catch(e){return 'err:'+e.message;}})()",
-                        value -> Logx.i("ExamHook: hardware search trigger => " + value));
+                        value -> Logx.i("ExamHook: legacy search fallback => " + value));
             } catch (Throwable t) {
-                Logx.w("ExamHook: hardware search trigger failed: " + t.getMessage());
+                Logx.w("ExamHook: legacy search fallback failed: " + t.getMessage());
             }
-        });
+        }, 1500L);
         return true;
     }
 
@@ -1437,6 +1472,39 @@ public class ExamHook {
      */
     private void applyOcrAnswerToActiveWebView(String ocrText, String answer) {
         applyAnswerToQuestionByText(ocrText, answer, org.xiyu.starx.util.HtmlQuestionExtractor.Type.UNKNOWN, -1);
+    }
+
+    /**
+     * 在考试 WebView 页面注入独立悬浮 AI 搜题按钮（带 "AI" 标签）。
+     * 点击直接触发 HTML 管线，不触发 OCR 截屏，避免系统录屏指示条。
+     * 幂等：若已存在 id=__starxAiBtn 则跳过。
+     */
+    private void injectFloatingAiButton(WebView wv) {
+        if (wv == null) return;
+        try {
+            String script =
+                "(function(){try{" +
+                "if(document.getElementById('__starxAiBtn'))return 'exists';" +
+                "var b=document.createElement('div');b.id='__starxAiBtn';" +
+                "b.innerHTML='<span style=\"font-size:11px;background:rgba(255,255,255,0.22);color:#fff;border-radius:6px;padding:1px 5px;margin-right:6px;font-weight:700;letter-spacing:0.5px;\">AI</span>搜题';" +
+                "b.style.cssText='position:fixed;right:14px;bottom:120px;z-index:2147483647;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:14px;font-weight:600;padding:9px 14px;border-radius:24px;box-shadow:0 6px 20px rgba(99,102,241,0.45);cursor:pointer;user-select:none;font-family:-apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif;display:flex;align-items:center;line-height:1;touch-action:manipulation;';" +
+                "var lbl=document.createElement('div');lbl.textContent='StarX';" +
+                "lbl.style.cssText='position:fixed;right:14px;bottom:150px;z-index:2147483647;font-size:10px;color:#8b5cf6;background:rgba(255,255,255,0.9);padding:1px 6px;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;pointer-events:none;font-weight:700;letter-spacing:0.5px;box-shadow:0 2px 6px rgba(0,0,0,0.08);';" +
+                "var busy=false;function run(){if(busy)return;busy=true;var old=b.innerHTML;b.innerHTML='<span style=\"font-size:11px;background:rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:1px 5px;margin-right:6px;font-weight:700;\">AI</span>搜题中…';" +
+                "try{if(window._starx&&window._starx.kickHtmlPipeline){window._starx.kickHtmlPipeline();}else if(window._starxNative&&window._starxNative.kickHtmlPipeline){window._starxNative.kickHtmlPipeline();}}catch(e){}" +
+                "setTimeout(function(){b.innerHTML=old;busy=false;},3500);}" +
+                "var dragging=false,moved=false,sx=0,sy=0,ox=0,oy=0;" +
+                "b.addEventListener('touchstart',function(e){if(!e.touches||!e.touches[0])return;var t=e.touches[0];sx=t.clientX;sy=t.clientY;var r=b.getBoundingClientRect();ox=r.left;oy=r.top;moved=false;dragging=true;},{passive:true});" +
+                "b.addEventListener('touchmove',function(e){if(!dragging||!e.touches||!e.touches[0])return;var t=e.touches[0];var dx=t.clientX-sx,dy=t.clientY-sy;if(Math.abs(dx)>6||Math.abs(dy)>6){moved=true;b.style.left=(ox+dx)+'px';b.style.top=(oy+dy)+'px';b.style.right='auto';b.style.bottom='auto';lbl.style.left=(ox+dx)+'px';lbl.style.top=(oy+dy-22)+'px';lbl.style.right='auto';lbl.style.bottom='auto';}},{passive:true});" +
+                "b.addEventListener('touchend',function(e){dragging=false;if(!moved){e.preventDefault();run();}},{passive:false});" +
+                "b.addEventListener('click',function(e){if(!moved){e.preventDefault();run();}});" +
+                "document.body.appendChild(lbl);document.body.appendChild(b);" +
+                "return 'ok';" +
+                "}catch(e){return 'err:'+e.message;}})()";
+            wv.evaluateJavascript(script, v -> Logx.i("ExamHook: floating AI button => " + v));
+        } catch (Throwable t) {
+            Logx.w("ExamHook: floating AI button inject failed: " + t.getMessage());
+        }
     }
 
     // ==========================================================
