@@ -1686,20 +1686,31 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 val downloadUrl = apkUrl.ifEmpty { htmlUrl }
                 val remoteVersion = tagName.removePrefix("v").removePrefix("V")
                 val hasUpdate = remoteVersion.isNotEmpty() && isNewerVersion(remoteVersion, VERSION_NAME)
+                val mandatory = isMandatoryUpdate(remoteVersion)
                 postIfAlive {
                     binding.homeUpdateValue.text = if (hasUpdate) {
-                        "发现新版本: $releaseName"
+                        if (mandatory) "发现新版本（强制）: $releaseName" else "发现新版本: $releaseName"
                     } else {
                         "当前已是最新版本 v$VERSION_NAME"
                     }
                     if (hasUpdate) {
-                        showUpdateDialog(releaseName, releaseBody, downloadUrl)
+                        showUpdateDialog(releaseName, releaseBody, downloadUrl, mandatory)
                     }
                 }
             } catch (_: Throwable) {
                 postIfAlive { binding.homeUpdateValue.text = "更新检查失败，请稍后重试" }
             }
         }.start()
+    }
+
+    /**
+     * 只有 x.x.0 这种 minor 升级才强制更新；x.x.y (y>0) 的补丁版仅提示不强制。
+     * 无法解析的视为非强制。
+     */
+    private fun isMandatoryUpdate(remote: String): Boolean {
+        val parts = remote.split(".").map { it.toIntOrNull() ?: -1 }
+        if (parts.size < 3 || parts.any { it < 0 }) return false
+        return parts[2] == 0
     }
 
     private fun isNewerVersion(remote: String, current: String): Boolean {
@@ -1715,24 +1726,33 @@ class MainActivity : Activity(), App.ServiceStateListener {
         return false
     }
 
-    private fun showUpdateDialog(version: String, releaseNotes: String, downloadUrl: String) {
+    private fun showUpdateDialog(version: String, releaseNotes: String, downloadUrl: String, mandatory: Boolean) {
         val msg = buildString {
-            append("新版本 $version 可用，请更新后继续使用。")
+            if (mandatory) {
+                append("新版本 $version 可用，请更新后继续使用。")
+            } else {
+                append("新版本 $version 可用，建议更新以获得更好体验。")
+            }
             if (releaseNotes.isNotEmpty()) {
                 append("\n\n更新内容:\n")
                 append(releaseNotes)
             }
         }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("发现新版本")
+        val builder = android.app.AlertDialog.Builder(this)
+            .setTitle(if (mandatory) "发现新版本（建议立即更新）" else "发现新版本")
             .setMessage(msg)
             .setPositiveButton("前往更新") { _, _ ->
                 if (downloadUrl.isNotEmpty()) {
                     openExternalUrl(downloadUrl, "无法打开下载链接")
                 }
             }
-            .setCancelable(false)
-            .show()
+        if (mandatory) {
+            builder.setCancelable(false)
+        } else {
+            builder.setNegativeButton("稍后再说") { d, _ -> d.dismiss() }
+            builder.setCancelable(true)
+        }
+        builder.show()
     }
 
     private fun checkAnnouncement() {

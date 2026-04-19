@@ -102,7 +102,11 @@ public final class HtmlQuestionExtractor {
             } else if (nw > 0) {
                 pick = work; mode = "work";
             } else {
-                return Collections.emptyList();
+                // 通用 fallback：匹配新版 UI（"1. 单选题" 这种简洁页面）
+                List<Question> generic = parseGeneric(doc);
+                Logx.i("HtmlQuestionExtractor: mode=generic parsed=" + generic.size()
+                        + " (exam=0 quiz=0 work=0, html.len=" + html.length() + ")");
+                return generic;
             }
 
             List<Question> out = new ArrayList<>();
@@ -239,6 +243,140 @@ public final class HtmlQuestionExtractor {
 
     // ---------- 工具 ----------
     private static final Pattern INDEX_PAT = Pattern.compile("^(\\d+)");
+
+    /**
+     * 通用 fallback：识别"1. 单选题 / 单选 / 判断"这种新版简洁 UI 页面。
+     *
+     * 策略：
+     * 1. 扫描所有包含"单选|多选|判断|填空|简答"的小容器（带或不带"N. xxx"前缀），视为题号标记。
+     * 2. 从该标记向后取同级/紧邻的长文本块当题干，向后取带 A-Z 字母或 radio/checkbox 的节点当选项。
+     * 3. 去重 + 按题干非空过滤。
+     */
+    private static List<Question> parseGeneric(Document doc) {
+        List<Question> out = new ArrayList<>();
+        java.util.Set<String> seenStems = new java.util.HashSet<>();
+        Elements all = doc.select("body *");
+        Pattern typeMarker = Pattern.compile("(?:^|[\\s\\.])(单选题|多选题|判断题|填空题|简答题|单选|多选|判断|填空|简答)");
+        for (Element candidate : all) {
+            String own = candidate.ownText();
+            if (own == null || own.length() > 40 || own.length() < 2) continue;
+            Matcher m = typeMarker.matcher(own);
+            if (!m.find()) continue;
+            Question q = new Question();
+            q.type = Type.fromTitle(own);
+            q.index = extractIndex(own);
+            Element root = climbToQuestionRoot(candidate);
+            Element stemEl = findStemUnder(root, candidate);
+            String stem = stemEl != null ? stemEl.text().trim() : "";
+            if (stem.isEmpty() || stem.length() < 4) continue;
+            if (!seenStems.add(stem)) continue;
+            q.stem = stem;
+            if (q.type == Type.SINGLE_CHOICE || q.type == Type.MULTIPLE_CHOICE || q.type == Type.TRUE_FALSE
+                    || q.type == Type.UNKNOWN) {
+                q.options = findGenericOptions(root);
+                if (q.type == Type.UNKNOWN && !q.options.isEmpty()) {
+                    q.type = q.options.size() == 2 ? Type.TRUE_FALSE : Type.SINGLE_CHOICE;
+                }
+            } else if (q.type == Type.FILL_BLANK) {
+                q.blankCount = Math.max(1, extractBlankCount(root));
+            }
+            out.add(q);
+        }
+        return out;
+    }
+
+    /** 从给定节点向上爬到合理的题块容器（同级有选项的最近祖先）。 */
+    private static Element climbToQuestionRoot(Element start) {
+        Element cur = start;
+        for (int depth = 0; depth < 6 && cur != null && cur.parent() != null; depth++) {
+            Element p = cur.parent();
+            // 如果父节点里已经能看到选项特征（含 A-D 字母 / label / radio），就停在父节点
+            if (p.select("label, input[type=radio], input[type=checkbox]").size() >= 2) return p;
+            String ptxt = p.text();
+            if (ptxt != null) {
+                int letters = 0;
+                for (char c : new char[]{'A', 'B', 'C', 'D'}) {
+                    if (ptxt.indexOf(c + ".") >= 0 || ptxt.indexOf(c + "、") >= 0 || ptxt.indexOf(c + " ") >= 0) letters++;
+                }
+                if (letters >= 2) return p;
+            }
+            cur = p;
+        }
+        return start.parent() != null ? start.parent() : start;
+    }
+
+    /** 在题块里找最可能的题干节点（长中文句、带问号或以数字开头）。 */
+    private static Element findStemUnder(Element root, Element typeMarker) {
+        Elements candidates = root.select("p, div, h1, h2, h3, span, section");
+        Element best = null;
+        int bestScore = 0;
+        for (Element e : candidates) {
+            if (e == typeMarker) continue;
+            String t = e.ownText();
+            if (t == null || t.length() < 6) continue;
+            if (t.length() > 400) continue;
+            int score = 0;
+            score += Math.min(20, t.length() / 4);
+            if (t.contains("?") || t.contains("？")) score += 6;
+            if (t.startsWith("根据") || t.startsWith("下列") || t.startsWith("关于") || t.startsWith("以下")) score += 4;
+            // 避免选到"下一题 / 答题卡 / 上一题"等 UI 按钮
+            if (t.contains("下一题") || t.contains("上一题") || t.contains("答题卡") || t.contains("提交")) continue;
+            // 避免选到含有太多 ABCD 前缀的节点（那应该是选项聚合）
+            int letters = 0;
+            for (char c : new char[]{'A', 'B', 'C', 'D'}) {
+                if (t.indexOf(c + ".") >= 0) letters++;
+                if (t.indexOf(c + "、") >= 0) letters++;
+            }
+            if (letters >= 2) continue;
+            if (score > bestScore) {
+                bestScore = score;
+                best = e;
+            }
+        }
+        return best;
+    }
+
+    /** 在题块里收集选项：A/B/C/D 前缀 / label / radio / checkbox 任一命中即可。 */
+    private static List<Option> findGenericOptions(Element root) {
+        List<Option> list = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        // 优先走 label + input
+        Elements labels = root.select("label:has(input[type=radio]), label:has(input[type=checkbox])");
+        for (Element l : labels) {
+            String t = l.text().trim();
+            if (t.isEmpty()) continue;
+            String key = extractLeadingLetter(t);
+            String txt = stripLeadingLetter(t);
+            if (!seen.add(txt.isEmpty() ? t : txt)) continue;
+            list.add(new Option(key, txt.isEmpty() ? t : txt));
+        }
+        if (!list.isEmpty()) return list;
+        // 退化：找文本节点带 "A." / "A、" 等前缀的
+        Elements nodes = root.select("li, p, div, span");
+        for (Element n : nodes) {
+            String t = n.ownText().trim();
+            if (t.length() < 2 || t.length() > 300) continue;
+            if (!LEADING_LETTER.matcher(t).find()) continue;
+            String key = extractLeadingLetter(t);
+            String txt = stripLeadingLetter(t);
+            if (txt.isEmpty()) continue;
+            if (!seen.add(txt)) continue;
+            list.add(new Option(key, txt));
+            if (list.size() >= 8) break;
+        }
+        return list;
+    }
+
+    private static final Pattern LEADING_LETTER = Pattern.compile("^\\s*([A-Za-z])[\\.、:：\\s]");
+
+    private static String extractLeadingLetter(String text) {
+        Matcher m = LEADING_LETTER.matcher(text);
+        return m.find() ? m.group(1).toUpperCase(java.util.Locale.ROOT) : "";
+    }
+
+    private static String stripLeadingLetter(String text) {
+        return LEADING_LETTER.matcher(text).replaceFirst("").trim();
+    }
 
     private static int extractIndex(String title) {
         if (title == null) return -1;

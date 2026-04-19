@@ -13,6 +13,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.webkit.JsPromptResult;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
@@ -1441,25 +1442,15 @@ public class ExamHook {
         if (webView == null) {
             return false;
         }
-        // 主路径：HTML 管线（jsoup 解析 + AnswerProvider 直答，不触发截屏/OCR，避免系统绿色录屏指示条）
+        // 只走 HTML 管线：jsoup 解析 + AnswerProvider 直答。
+        // 不再调用服务端 doSearch，避免其触发 MediaProjection 导致系统绿色录屏指示条。
         mainHandler.post(() -> {
             try {
                 Toast.makeText(webView.getContext(), "StarX · AI 搜题中…", Toast.LENGTH_SHORT).show();
             } catch (Throwable ignored) {}
-            // 让管线忽略最近节流，强制立刻跑
             lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
             launchHtmlPipeline(webView);
         });
-        // 兜底：若服务端旧脚本仍存在（OCR 路径），稍后再触发一次；如 HTML 管线已命中则服务端脚本会按原逻辑去重
-        mainHandler.postDelayed(() -> {
-            try {
-                webView.evaluateJavascript(
-                        "(function(){try{return window.__starxTriggerSearch&&window.__starxTriggerSearch()||'missing';}catch(e){return 'err:'+e.message;}})()",
-                        value -> Logx.i("ExamHook: legacy search fallback => " + value));
-            } catch (Throwable t) {
-                Logx.w("ExamHook: legacy search fallback failed: " + t.getMessage());
-            }
-        }, 1500L);
         return true;
     }
 
@@ -1475,36 +1466,160 @@ public class ExamHook {
     }
 
     /**
-     * 在考试 WebView 页面注入独立悬浮 AI 搜题按钮（带 "AI" 标签）。
-     * 点击直接触发 HTML 管线，不触发 OCR 截屏，避免系统录屏指示条。
-     * 幂等：若已存在 id=__starxAiBtn 则跳过。
+     * 在考试 WebView 页面上方添加原生悬浮 AI 搜题按钮（带 "AI" 标签）。
+     *
+     * 关键：使用 FLAG_SECURE 的 SecureOverlay（应用内子窗口）承载，
+     *      录屏/截图时整个按钮显示为黑块，避免被"截屏到"。
+     * 点击直接触发 HTML 管线，不触发 OCR 截屏。
+     * 幂等：绑定到 Activity，若已存在则跳过；Activity 销毁时自动清理。
      */
     private void injectFloatingAiButton(WebView wv) {
         if (wv == null) return;
         try {
-            String script =
-                "(function(){try{" +
-                "if(document.getElementById('__starxAiBtn'))return 'exists';" +
-                "var b=document.createElement('div');b.id='__starxAiBtn';" +
-                "b.innerHTML='<span style=\"font-size:11px;background:rgba(255,255,255,0.22);color:#fff;border-radius:6px;padding:1px 5px;margin-right:6px;font-weight:700;letter-spacing:0.5px;\">AI</span>搜题';" +
-                "b.style.cssText='position:fixed;right:14px;bottom:120px;z-index:2147483647;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:14px;font-weight:600;padding:9px 14px;border-radius:24px;box-shadow:0 6px 20px rgba(99,102,241,0.45);cursor:pointer;user-select:none;font-family:-apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif;display:flex;align-items:center;line-height:1;touch-action:manipulation;';" +
-                "var lbl=document.createElement('div');lbl.textContent='StarX';" +
-                "lbl.style.cssText='position:fixed;right:14px;bottom:150px;z-index:2147483647;font-size:10px;color:#8b5cf6;background:rgba(255,255,255,0.9);padding:1px 6px;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;pointer-events:none;font-weight:700;letter-spacing:0.5px;box-shadow:0 2px 6px rgba(0,0,0,0.08);';" +
-                "var busy=false;function run(){if(busy)return;busy=true;var old=b.innerHTML;b.innerHTML='<span style=\"font-size:11px;background:rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:1px 5px;margin-right:6px;font-weight:700;\">AI</span>搜题中…';" +
-                "try{if(window._starx&&window._starx.kickHtmlPipeline){window._starx.kickHtmlPipeline();}else if(window._starxNative&&window._starxNative.kickHtmlPipeline){window._starxNative.kickHtmlPipeline();}}catch(e){}" +
-                "setTimeout(function(){b.innerHTML=old;busy=false;},3500);}" +
-                "var dragging=false,moved=false,sx=0,sy=0,ox=0,oy=0;" +
-                "b.addEventListener('touchstart',function(e){if(!e.touches||!e.touches[0])return;var t=e.touches[0];sx=t.clientX;sy=t.clientY;var r=b.getBoundingClientRect();ox=r.left;oy=r.top;moved=false;dragging=true;},{passive:true});" +
-                "b.addEventListener('touchmove',function(e){if(!dragging||!e.touches||!e.touches[0])return;var t=e.touches[0];var dx=t.clientX-sx,dy=t.clientY-sy;if(Math.abs(dx)>6||Math.abs(dy)>6){moved=true;b.style.left=(ox+dx)+'px';b.style.top=(oy+dy)+'px';b.style.right='auto';b.style.bottom='auto';lbl.style.left=(ox+dx)+'px';lbl.style.top=(oy+dy-22)+'px';lbl.style.right='auto';lbl.style.bottom='auto';}},{passive:true});" +
-                "b.addEventListener('touchend',function(e){dragging=false;if(!moved){e.preventDefault();run();}},{passive:false});" +
-                "b.addEventListener('click',function(e){if(!moved){e.preventDefault();run();}});" +
-                "document.body.appendChild(lbl);document.body.appendChild(b);" +
-                "return 'ok';" +
-                "}catch(e){return 'err:'+e.message;}})()";
-            wv.evaluateJavascript(script, v -> Logx.i("ExamHook: floating AI button => " + v));
+            Activity act = SecureOverlay.asActivity(wv.getContext());
+            if (act == null) return;
+            int actId = System.identityHashCode(act);
+            if (aiButtonAttached.contains(actId)) return;
+
+            final WebView webViewRef = wv;
+            android.widget.LinearLayout bar = new android.widget.LinearLayout(act);
+            bar.setOrientation(android.widget.LinearLayout.VERTICAL);
+            bar.setGravity(Gravity.CENTER);
+            bar.setPadding(dp(act, 2), dp(act, 2), dp(act, 2), dp(act, 2));
+
+            TextView lbl = new TextView(act);
+            lbl.setText("StarX");
+            lbl.setTextColor(Color.parseColor("#8b5cf6"));
+            lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
+            lbl.setTypeface(Typeface.DEFAULT_BOLD);
+            GradientDrawable lblBg = new GradientDrawable();
+            lblBg.setColor(Color.parseColor("#F2FFFFFF"));
+            lblBg.setCornerRadius(dp(act, 8));
+            lbl.setBackground(lblBg);
+            lbl.setPadding(dp(act, 6), dp(act, 1), dp(act, 6), dp(act, 1));
+            android.widget.LinearLayout.LayoutParams lblLp = new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT);
+            lblLp.bottomMargin = dp(act, 4);
+            lblLp.gravity = Gravity.END;
+            bar.addView(lbl, lblLp);
+
+            android.widget.LinearLayout btn = new android.widget.LinearLayout(act);
+            btn.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            btn.setGravity(Gravity.CENTER_VERTICAL);
+            btn.setPadding(dp(act, 10), dp(act, 8), dp(act, 12), dp(act, 8));
+            GradientDrawable btnBg = new GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    new int[]{Color.parseColor("#6366f1"), Color.parseColor("#8b5cf6")});
+            btnBg.setCornerRadius(dp(act, 22));
+            btn.setBackground(btnBg);
+            btn.setElevation(dp(act, 6));
+
+            TextView tag = new TextView(act);
+            tag.setText("AI");
+            tag.setTextColor(Color.WHITE);
+            tag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+            tag.setTypeface(Typeface.DEFAULT_BOLD);
+            GradientDrawable tagBg = new GradientDrawable();
+            tagBg.setColor(Color.parseColor("#38FFFFFF"));
+            tagBg.setCornerRadius(dp(act, 6));
+            tag.setBackground(tagBg);
+            tag.setPadding(dp(act, 5), dp(act, 1), dp(act, 5), dp(act, 1));
+            android.widget.LinearLayout.LayoutParams tagLp = new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT);
+            tagLp.rightMargin = dp(act, 6);
+            btn.addView(tag, tagLp);
+
+            TextView label = new TextView(act);
+            label.setText("搜题");
+            label.setTextColor(Color.WHITE);
+            label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+            label.setTypeface(Typeface.DEFAULT_BOLD);
+            btn.addView(label);
+            bar.addView(btn);
+
+            final TextView labelRef = label;
+            final int[] downXY = new int[2];
+            final boolean[] moved = {false};
+            final int slop = dp(act, 6);
+            btn.setOnTouchListener((v, ev) -> {
+                switch (ev.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        downXY[0] = (int) ev.getRawX();
+                        downXY[1] = (int) ev.getRawY();
+                        moved[0] = false;
+                        return true;
+                    case android.view.MotionEvent.ACTION_MOVE: {
+                        int dx = (int) ev.getRawX() - downXY[0];
+                        int dy = (int) ev.getRawY() - downXY[1];
+                        if (Math.abs(dx) > slop || Math.abs(dy) > slop) {
+                            moved[0] = true;
+                            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) bar.getLayoutParams();
+                            if (lp != null) {
+                                lp.x = Math.max(0, lp.x - dx);
+                                lp.y = Math.max(0, lp.y + dy);
+                                downXY[0] = (int) ev.getRawX();
+                                downXY[1] = (int) ev.getRawY();
+                                try {
+                                    WindowManager wm = (WindowManager) act.getSystemService(Context.WINDOW_SERVICE);
+                                    wm.updateViewLayout(bar, lp);
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                        return true;
+                    }
+                    case android.view.MotionEvent.ACTION_UP:
+                        if (!moved[0]) {
+                            v.performClick();
+                        }
+                        return true;
+                }
+                return false;
+            });
+            btn.setOnClickListener(v -> {
+                try {
+                    labelRef.setText("搜题中…");
+                    mainHandler.postDelayed(() -> {
+                        try { labelRef.setText("搜题"); } catch (Throwable ignored) {}
+                    }, 3500L);
+                    lastHtmlPipelineRunAt.remove(System.identityHashCode(webViewRef));
+                    launchHtmlPipeline(webViewRef);
+                } catch (Throwable t) {
+                    Logx.w("ExamHook: AI button click failed: " + t.getMessage());
+                }
+            });
+
+            WindowManager.LayoutParams lp = SecureOverlay.addSecureView(
+                    act, bar, Gravity.END | Gravity.BOTTOM, dp(act, 14), dp(act, 120));
+            aiButtonAttached.add(actId);
+            // 挂钩 Activity 销毁时清理
+            act.getApplication().registerActivityLifecycleCallbacks(
+                    new android.app.Application.ActivityLifecycleCallbacks() {
+                        @Override public void onActivityCreated(Activity a, android.os.Bundle s) {}
+                        @Override public void onActivityStarted(Activity a) {}
+                        @Override public void onActivityResumed(Activity a) {}
+                        @Override public void onActivityPaused(Activity a) {}
+                        @Override public void onActivityStopped(Activity a) {}
+                        @Override public void onActivitySaveInstanceState(Activity a, android.os.Bundle s) {}
+                        @Override public void onActivityDestroyed(Activity a) {
+                            if (a == act) {
+                                try { SecureOverlay.removeSecureView(act, bar); } catch (Throwable ignored) {}
+                                aiButtonAttached.remove(actId);
+                                try { a.getApplication().unregisterActivityLifecycleCallbacks(this); } catch (Throwable ignored) {}
+                            }
+                        }
+                    });
+            Logx.i("ExamHook: native AI button attached to activity#" + Integer.toHexString(actId));
         } catch (Throwable t) {
-            Logx.w("ExamHook: floating AI button inject failed: " + t.getMessage());
+            Logx.w("ExamHook: native AI button attach failed: " + t.getMessage());
         }
+    }
+
+    private final java.util.Set<Integer> aiButtonAttached = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    private static int dp(Context ctx, int v) {
+        return (int) (ctx.getResources().getDisplayMetrics().density * v + 0.5f);
     }
 
     // ==========================================================
