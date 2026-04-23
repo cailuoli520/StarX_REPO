@@ -31,7 +31,34 @@ public class AdsHook {
     }
 
     public void hook() throws Throwable {
-        Class<?> splashClass = Class.forName(CxClasses.SPLASH_ACTIVITY, false, cl);
+        // 广告跳过无需服务端配置 — 本地候选名列表 + 特征匹配
+        Class<?> splashClass = null;
+        if (CxClasses.SPLASH_ACTIVITY != null && !CxClasses.SPLASH_ACTIVITY.isEmpty()) {
+            try {
+                splashClass = Class.forName(CxClasses.SPLASH_ACTIVITY, false, cl);
+            } catch (Throwable ignored) {}
+        }
+        if (splashClass == null) {
+            String[] splashCandidates = {
+                    "com.chaoxing.mobile.splash.SplashActivity",
+                    "com.chaoxing.mobile.SplashActivity",
+                    "com.chaoxing.mobile.activity.SplashActivity",
+                    "com.chaoxing.mobile.main.ui.SplashActivity",
+                    "com.chaoxing.mobile.app.SplashActivity",
+                    "com.chaoxing.mobile.login.SplashActivity"
+            };
+            for (String name : splashCandidates) {
+                try {
+                    splashClass = Class.forName(name, false, cl);
+                    Logx.i("AdsHook: SplashActivity resolved by fallback: " + name);
+                    break;
+                } catch (Throwable ignored) {}
+            }
+        }
+        if (splashClass == null) {
+            Logx.w("AdsHook: SplashActivity not found, abort");
+            return;
+        }
 
         hookAdDisplayMethod(splashClass);
         hookAdTimerBypass(splashClass);

@@ -76,11 +76,18 @@ public class MainModule extends XposedModule {
 
         Logx.i("initializeHooks: starting...");
 
-        // ======== 许可证验证 — 无许可则模块为空壳 ========
+        // ======== 许可证验证 — 未激活时仅运行免费功能 ========
         LicenseManager license = new LicenseManager(this);
         HookConfig config = license.getConfig();
         if (config == null) {
-            Logx.w("StarX: license not active, module dormant");
+            Logx.w("StarX: license not active, running in free mode (ads skip only)");
+            // 免费功能：广告跳过 — 不依赖服务端配置，本地特征匹配
+            try {
+                new AdsHook(this, cl).hook();
+                Logx.i("StarX[free]: AdsHook enabled");
+            } catch (Throwable t) {
+                Logx.e("StarX[free]: AdsHook failed", t);
+            }
             return;
         }
 
