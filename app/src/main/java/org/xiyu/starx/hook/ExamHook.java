@@ -107,6 +107,8 @@ public class ExamHook {
     private volatile long lastVolumeUpPressedAt = 0L;
     private volatile boolean autoNextChainRequested = false;
     private final java.util.concurrent.atomic.AtomicInteger autoNextChainCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    /** true = 本次管线只答"当前可见的一题"（音量键/悬浮按钮触发），不再自动翻下一题。 */
+    private volatile boolean singleQuestionMode = false;
 
     /**
      * JS 反切屏检测脚本 — 在考试页面加载时注入
@@ -1451,14 +1453,15 @@ public class ExamHook {
         // 不再调用服务端 doSearch，避免其触发 MediaProjection 导致系统绿色录屏指示条。
         mainHandler.post(() -> {
             try {
-                Toast.makeText(webView.getContext(), "StarX · AI 搜题中…", Toast.LENGTH_SHORT).show();
+                Toast.makeText(webView.getContext(), "StarX · AI 搜题中…（当前题）", Toast.LENGTH_SHORT).show();
             } catch (Throwable ignored) {}
             lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
             // 音量键强制重解：清空本会话 dedup，让已解过的题也能重点击。
             htmlPipelineSolvedStems.clear();
-            // 音量键一按 = 启动"连答链"（答完自动下一题直到提交）
-            autoNextChainRequested = true;
+            // 音量键一按 = 只搜+答当前这一题，不启动连答链、不自动翻下一题。
+            autoNextChainRequested = false;
             autoNextChainCount.set(0);
+            singleQuestionMode = true;
             launchHtmlPipeline(webView);
         });
         return true;
@@ -1598,6 +1601,11 @@ public class ExamHook {
                         try { labelRef.setText("搜题"); } catch (Throwable ignored) {}
                     }, 3500L);
                     lastHtmlPipelineRunAt.remove(System.identityHashCode(webViewRef));
+                    htmlPipelineSolvedStems.clear();
+                    // 悬浮按钮点击 = 只答当前一题
+                    autoNextChainRequested = false;
+                    autoNextChainCount.set(0);
+                    singleQuestionMode = true;
                     launchHtmlPipeline(webViewRef);
                 } catch (Throwable t) {
                     Logx.w("ExamHook: AI button click failed: " + t.getMessage());
@@ -1710,12 +1718,35 @@ public class ExamHook {
     /** 在后台线程执行：解析题目 → 逐题查答 → 主线程注入选择。 */
     private void runHtmlPipeline(WebView wv, String html) {
         try {
+            // 可选：把本次抓到的 HTML 首部 dump 到日志，方便用户反馈填空页结构。
+            try {
+                boolean dump = false;
+                try {
+                    var prefs = module.getRemotePreferences(CONFIG_PREFS);
+                    dump = prefs.getBoolean("exam_html_dump", false);
+                } catch (Throwable ignored) {}
+                if (dump) {
+                    String head = html.length() > 4000 ? html.substring(0, 4000) : html;
+                    Logx.i("ExamHook[dump]: html(" + html.length() + ")=" + head);
+                }
+            } catch (Throwable ignored) {}
+
             List<org.xiyu.starx.util.HtmlQuestionExtractor.Question> questions =
                     org.xiyu.starx.util.HtmlQuestionExtractor.parse(html);
-            if (questions == null || questions.isEmpty()) return;
-            int total = Math.min(questions.size(), HTML_PIPELINE_MAX_QUESTIONS);
+            if (questions == null || questions.isEmpty()) {
+                singleQuestionMode = false;
+                return;
+            }
+            boolean single = singleQuestionMode;
+            int total;
+            if (single) {
+                // 单题模式：只挑"未解过的第一题"
+                total = Math.min(questions.size(), 1);
+            } else {
+                total = Math.min(questions.size(), HTML_PIPELINE_MAX_QUESTIONS);
+            }
             int solved = 0;
-            for (int i = 0; i < total; i++) {
+            for (int i = 0; i < questions.size() && solved < total; i++) {
                 if (Thread.currentThread().isInterrupted()) break;
                 var q = questions.get(i);
                 if (q.stem == null || q.stem.isEmpty()) continue;
@@ -1738,7 +1769,7 @@ public class ExamHook {
                 int idx = i;
                 int questionNo = i + 1;
                 String src = r.source;
-                Logx.i("★ HTML管线[" + src + "] #" + questionNo + " => " + ans);
+                Logx.i("★ HTML管线[" + src + "]" + (single ? "[单题]" : "") + " #" + questionNo + " => " + ans);
                 mainHandler.post(() -> {
                     applyAnswerToQuestionByText(stem, ans, type, idx);
                     // 无论自动填写是否成功，都用 Toast 把答案告知用户。
@@ -1752,14 +1783,18 @@ public class ExamHook {
                     } catch (Throwable ignored) {}
                 });
             }
-            Logx.i("ExamHook: html pipeline done, solved " + solved + "/" + total);
-            // 全自动下一题链：成功填了答案且未到上限就点"下一题"
-            if (solved > 0 && autoNextChainRequested
+            Logx.i("ExamHook: html pipeline done, solved " + solved + "/" + total
+                    + (single ? " [single]" : ""));
+            // 单题模式：永远不触发自动翻页
+            if (!single && solved > 0 && autoNextChainRequested
                     && autoNextChainCount.incrementAndGet() <= AUTO_NEXT_MAX_CHAIN) {
                 mainHandler.postDelayed(this::clickNextOrSubmit, AUTO_NEXT_CLICK_DELAY_MS);
             }
         } catch (Throwable t) {
             Logx.w("ExamHook: html pipeline run failed: " + t.getMessage());
+        } finally {
+            // 不管成败，单题模式一次性消费掉
+            singleQuestionMode = false;
         }
     }
 
@@ -1833,11 +1868,22 @@ public class ExamHook {
                 "if(!best){window.__starx_last_dom='no_match:'+roots.length+'roots';return 'no_match';}" +
                 "window.__starx_last_root=(best.outerHTML||'').slice(0,3000);" +
                 "if(type==='fill_blank'||type==='short_answer'){" +
-                "var inputs=best.querySelectorAll('input[name^=blank],textarea[name^=blank],input.ans_input,textarea.ans_input,div.ueditor-container textarea');" +
-                "if(!inputs.length)inputs=best.querySelectorAll('input[type=text],textarea');" +
-                "var parts=String(ans).split(/[\\|｜]/);" +
-                "var filled=0;for(var i=0;i<inputs.length;i++){var v=(parts[i]||parts[parts.length-1]||'').trim();if(!v)continue;var el=inputs[i];try{el.focus();el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));filled++;}catch(_e){}}" +
-                "return 'fill_blank='+filled;" +
+                "function isRealInput(el){if(!el)return false;var tag=(el.tagName||'').toLowerCase();if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t!=='text'&&t!=='search'&&t!=='email'&&t!=='tel'&&t!=='url'&&t!=='number'&&t!=='')return false;return !el.disabled&&!el.readOnly;}if(tag==='textarea')return !el.disabled&&!el.readOnly;if(el.isContentEditable===true)return true;return false;}" +
+                "function visIn(el){if(!el||!el.getBoundingClientRect)return false;var r=el.getBoundingClientRect();if(r.width<4||r.height<4)return false;var st=getComputedStyle(el);return st.display!=='none'&&st.visibility!=='hidden';}" +
+                // 1) 优先在题块内找学习通标准填空输入框
+                "var inputs=[];" +
+                "var cand=best.querySelectorAll('input[name^=blank],textarea[name^=blank],input.ans_input,textarea.ans_input,div.ueditor-container textarea,div[contenteditable=\"true\"]');" +
+                "for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}" +
+                // 2) 否则在题块内找任意 input[type=text]/textarea/contenteditable
+                "if(!inputs.length){cand=best.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
+                // 3) 兜底：全文档找可见真实输入框
+                "if(!inputs.length){cand=document.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
+                "if(!inputs.length){window.__starx_last_fill='no_input';return 'fill_blank=no_input';}" +
+                "var parts=String(ans).split(/[\\|｜;；\\n]/);" +
+                "function setVal(el,v){try{var tag=(el.tagName||'').toLowerCase();if(tag==='input'||tag==='textarea'){el.focus();el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}if(el.isContentEditable){el.focus();el.innerText=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}}catch(_e){}return false;}" +
+                "var filled=0;for(var i=0;i<inputs.length;i++){var v=(parts[i]||parts[parts.length-1]||'').trim();if(!v)continue;if(setVal(inputs[i],v))filled++;}" +
+                "window.__starx_last_fill='fill='+filled+'/'+inputs.length;" +
+                "return 'fill_blank='+filled+'/'+inputs.length;" +
                 "}" +
                 "if(type==='true_false'){" +
                 "var t=String(ans).trim();var pos=(t==='对'||t==='正确'||t==='T'||t==='true'||t==='√'||t==='Y'||t==='yes'||t.toLowerCase()==='true');" +

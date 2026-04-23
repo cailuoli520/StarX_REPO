@@ -1,11 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.StarX" parent="@android:style/Theme.DeviceDefault">
+    <!-- 主题：Material 3 DayNight（跟随系统深浅色），保留现有无 ActionBar / 无预览窗 设置 -->
+    <style name="Theme.StarX" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:windowDisablePreview">true</item>
+        <!-- 状态栏让给根布局的渐变背景 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <!-- Material 3 色彩：与现有 iOS 蓝对齐 -->
+        <item name="colorPrimary">@color/ios_blue</item>
+        <item name="colorOnPrimary">#FFFFFFFF</item>
+        <item name="colorSecondary">@color/ios_blue_deep</item>
+        <item name="colorSurface">@color/ios_card</item>
+        <item name="colorOnSurface">@color/ios_label</item>
     </style>
 
+    <!-- 向后兼容：部分控件仍显式使用 iOS 风 Switch 样式 -->
     <style name="Widget_StarX_Switch">
         <item name="android:showText">false</item>
         <item name="android:switchMinWidth">52dp</item>
