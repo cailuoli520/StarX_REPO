@@ -111,7 +111,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="12dp"
-                        android:text="已启用 0/8 项功能"
+                        android:text="已启用 0/9 项功能"
                         android:textColor="@color/ios_secondary_label"
                         android:textSize="13sp" />
 
@@ -430,6 +430,7 @@
                     <Switch android:id="@+id/switch_video" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="视频增强" android:textColor="@color/ios_label" />
                     <Switch android:id="@+id/switch_video_time" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="视频进度加速" android:textColor="@color/ios_label" />
                     <Switch android:id="@+id/switch_exam" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="搜题与测验" android:textColor="@color/ios_label" />
+                    <Switch android:id="@+id/switch_exam_floating_button" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="搜题悬浮按钮" android:textColor="@color/ios_label" />
 
                     <TextView
                         android:id="@+id/text_exam_trigger_status"

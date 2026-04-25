@@ -28,6 +28,7 @@ import org.xiyu.starx.answer.AnswerProvider;
 import org.xiyu.starx.util.AnswerMatcher;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.PrivateToast;
 import org.xiyu.starx.util.SecureOverlay;
 
 import java.lang.reflect.Field;
@@ -54,6 +55,7 @@ import io.github.libxposed.api.XposedModule;
 public class ExamHook {
     private static final String CONFIG_PREFS = "config";
     private static final String KEY_EXAM_ENABLED = "hook_exam_enabled";
+    private static final String KEY_EXAM_FLOATING_BUTTON = "hook_exam_floating_button_enabled";
     private static final String KEY_EXAM_TRIGGER = "hook_exam_trigger";
     private static final String KEY_EXAM_HTML_PIPELINE = "hook_exam_html_pipeline";
     private static final String KEY_EXAM_AUTO_NEXT = "hook_exam_auto_next";
@@ -91,7 +93,20 @@ public class ExamHook {
             "work/task/library",
             "mooc-ans/exam/phone/task-list",
             "exam/phone/selftest-list",
-            "phone/moocanalysis/selfscoredetail"
+            "phone/moocanalysis/selfscoredetail",
+            // 章节测验 / chapter test 入口（H5 + 嵌入 iframe）
+            "work/index_wap.html",
+            "chaptertest",
+            "chapter/test",
+            "chapter-test",
+            "chapter_test",
+            "/mooc-ans/work/",
+            "/mooc-ans/mooc2/work/",
+            "ananas/modules/work/",
+            "knowledge/cards",
+            "topicquestion",
+            "preview/topic",
+            "phone/exam-mc"
     };
     private final XposedModule module;
     private final ClassLoader cl;
@@ -1160,7 +1175,7 @@ public class ExamHook {
                 }
             });
 
-            SecureOverlay.addSecureView(activity, tv,
+            SecureOverlay.addNormalView(activity, tv,
                     Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 0, dpToPx(context, 132));
             statusOverlayView = tv;
 
@@ -1453,7 +1468,7 @@ public class ExamHook {
         // 不再调用服务端 doSearch，避免其触发 MediaProjection 导致系统绿色录屏指示条。
         mainHandler.post(() -> {
             try {
-                Toast.makeText(webView.getContext(), "StarX · AI 搜题中…（当前题）", Toast.LENGTH_SHORT).show();
+                PrivateToast.show(webView.getContext(), "StarX · AI 搜题中…（当前题）", Toast.LENGTH_SHORT);
             } catch (Throwable ignored) {}
             lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
             // 音量键强制重解：清空本会话 dedup，让已解过的题也能重点击。
@@ -1488,6 +1503,10 @@ public class ExamHook {
      */
     private void injectFloatingAiButton(WebView wv) {
         if (wv == null) return;
+        if (!isFloatingAiButtonEnabled()) {
+            Logx.i("ExamHook: native AI button disabled by user");
+            return;
+        }
         try {
             Activity act = SecureOverlay.asActivity(wv.getContext());
             if (act == null) {
@@ -1596,6 +1615,14 @@ public class ExamHook {
             });
             btn.setOnClickListener(v -> {
                 try {
+                    if (!isFloatingAiButtonEnabled()) {
+                        labelRef.setText("已关闭");
+                        mainHandler.postDelayed(() -> {
+                            try { labelRef.setText("搜题"); } catch (Throwable ignored) {}
+                        }, 2000L);
+                        PrivateToast.show(webViewRef.getContext(), "搜题悬浮按钮已关闭", Toast.LENGTH_SHORT);
+                        return;
+                    }
                     labelRef.setText("搜题中…");
                     mainHandler.postDelayed(() -> {
                         try { labelRef.setText("搜题"); } catch (Throwable ignored) {}
@@ -1653,6 +1680,16 @@ public class ExamHook {
         try {
             var prefs = module.getRemotePreferences(CONFIG_PREFS);
             return prefs.getBoolean(KEY_EXAM_HTML_PIPELINE, true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    private boolean isFloatingAiButtonEnabled() {
+        if (!isExamEnabled()) return false;
+        try {
+            var prefs = module.getRemotePreferences(CONFIG_PREFS);
+            return prefs.getBoolean(KEY_EXAM_FLOATING_BUTTON, true);
         } catch (Throwable t) {
             return true;
         }
@@ -1776,9 +1813,9 @@ public class ExamHook {
                     try {
                         WebView v = pickActiveExamWebView();
                         if (v != null) {
-                            Toast.makeText(v.getContext(),
+                            PrivateToast.show(v.getContext(),
                                     "StarX · 第" + questionNo + "题答案：" + ans + " ｜ " + src,
-                                    Toast.LENGTH_LONG).show();
+                                    Toast.LENGTH_LONG);
                         }
                     } catch (Throwable ignored) {}
                 });

@@ -37,15 +37,34 @@ public class SecureOverlay {
      */
     public static WindowManager.LayoutParams addSecureView(
             Activity activity, View view, int gravity, int x, int y) {
+        return addView(activity, view, gravity, x, y, true);
+    }
+
+    /**
+     * 将 View 以普通应用内浮层形式添加到 Activity 上方。
+     *
+     * 用于非敏感状态提示。它不会使用 FLAG_SECURE，因此截图时不会出现安全窗口黑块。
+     */
+    public static WindowManager.LayoutParams addNormalView(
+            Activity activity, View view, int gravity, int x, int y) {
+        return addView(activity, view, gravity, x, y, false);
+    }
+
+    private static WindowManager.LayoutParams addView(
+            Activity activity, View view, int gravity, int x, int y, boolean secure) {
         WindowManager wm = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
+
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        if (secure) {
+            flags |= WindowManager.LayoutParams.FLAG_SECURE;
+        }
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_SECURE,
+                flags,
                 PixelFormat.TRANSLUCENT);
 
         // 对 Activity 子窗口而言，正确的 token 是 decorView 的 windowToken，
@@ -65,16 +84,19 @@ public class SecureOverlay {
 
         try {
             wm.addView(view, params);
-            Logx.i("SecureOverlay: added secure view (gravity=" + gravity + ")");
+            Logx.i("SecureOverlay: added " + (secure ? "secure" : "normal")
+                    + " view (gravity=" + gravity + ")");
             return params;
         } catch (Throwable t) {
             Logx.w("SecureOverlay: TYPE_APPLICATION_PANEL failed, fallback to decor child: " + t.getMessage());
-            // 回退：把 view 作为 decorView 的子 View 挂上；虽然失去独立 FLAG_SECURE，
-            // 但 Activity 会话期间 setFlags(FLAG_SECURE) 能同样阻断截屏。
+            // 回退：把 view 作为 decorView 的子 View 挂上。安全浮层会顺带保护整个
+            // Activity 窗口；普通浮层保持原样，避免非敏感提示变成截图黑块。
             try {
                 android.view.Window w = activity.getWindow();
-                w.setFlags(WindowManager.LayoutParams.FLAG_SECURE,
-                        WindowManager.LayoutParams.FLAG_SECURE);
+                if (secure) {
+                    w.setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+                            WindowManager.LayoutParams.FLAG_SECURE);
+                }
                 android.widget.FrameLayout.LayoutParams flp =
                         new android.widget.FrameLayout.LayoutParams(
                                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -86,7 +108,8 @@ public class SecureOverlay {
                 flp.bottomMargin = (gravity & Gravity.BOTTOM) != 0 ? y : 0;
                 android.view.ViewGroup decor = (android.view.ViewGroup) w.getDecorView();
                 decor.addView(view, flp);
-                Logx.i("SecureOverlay: decor-child fallback attached (Activity window forced FLAG_SECURE)");
+                Logx.i("SecureOverlay: decor-child fallback attached"
+                        + (secure ? " (Activity window forced FLAG_SECURE)" : ""));
             } catch (Throwable t2) {
                 Logx.w("SecureOverlay: decor-child fallback failed: " + t2.getMessage());
             }

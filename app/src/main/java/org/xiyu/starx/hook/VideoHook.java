@@ -20,6 +20,7 @@ import android.widget.Toast;
 import org.xiyu.starx.util.ClassFinder;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.PrivateToast;
 import org.xiyu.starx.util.SecureOverlay;
 
 import java.lang.reflect.Constructor;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import io.github.libxposed.api.XposedModule;
@@ -93,6 +95,24 @@ public class VideoHook {
     // 服务端 {"isPassed":true} 出现过则认为真正完成；每次批量重置
     private volatile boolean lastBatchPassed;
 
+    // ── 真实流量监听：捕获用户正常播放时 App 自身发出的进度/完成上报 ──
+    /** 最近一次观察到的真实视频上报 URL（含 enc / clipTime / playingTime 等参数） */
+    private volatile String lastObservedReportUrl;
+    /** 最近一次观察到的真实 enc 值（来自 App 内部 MD5 计算后拼接的 URL） */
+    private volatile String lastObservedEnc;
+    /** 最近一次观察到 reportUrl 的时间戳（用于关联 ResponseBody） */
+    private volatile long lastObservedReportAt;
+    /** App 自身请求被服务端真实标记为完成（自然观看路径），用于校验 enc 算法是否仍然有效 */
+    private volatile boolean lastNaturalPassObserved;
+    /** 最近一次自然观察到 isPassed=true 的 objectId */
+    private volatile String lastPassedObjectId;
+    /** 监听日志去重：最近一次落盘的 enc */
+    private volatile String lastLoggedEnc;
+    /** 监听日志去重：最近一次落盘时间 */
+    private volatile long lastLoggedAt;
+    /** 监听日志去重窗口（毫秒）：相同 enc 在窗口内的重复 build() 不再写文件 */
+    private static final long LOG_DEDUP_WINDOW_MS = 1000L;
+
     public VideoHook(XposedModule module, ClassLoader cl) {
         this.module = module;
         this.cl = cl;
@@ -104,6 +124,7 @@ public class VideoHook {
         hookSpeedRestriction();
         hookProgressReport();
         hookPlayerUI();
+        hookReportTrafficMonitor();
         Logx.i("VideoHook: initialized");
     }
 
@@ -558,20 +579,20 @@ public class VideoHook {
                                  Method getVideoMethod, Context ctx) {
         try {
             if (vmField == null || getVideoMethod == null) {
-                Toast.makeText(ctx, "视频数据不可用", Toast.LENGTH_SHORT).show();
+                PrivateToast.show(ctx, "视频数据不可用", Toast.LENGTH_SHORT);
                 return;
             }
             Object vm = vmField.get(fragment);
             if (vm == null) return;
             Object courseVideo = getVideoMethod.invoke(vm);
             if (courseVideo == null) {
-                Toast.makeText(ctx, "当前无视频任务", Toast.LENGTH_SHORT).show();
+                PrivateToast.show(ctx, "当前无视频任务", Toast.LENGTH_SHORT);
                 return;
             }
 
             String videoKey = getVideoKey(courseVideo, courseVideoClass);
             if (completedVideos.contains(videoKey)) {
-                Toast.makeText(ctx, "已提交过完成请求", Toast.LENGTH_SHORT).show();
+                PrivateToast.show(ctx, "已提交过完成请求", Toast.LENGTH_SHORT);
                 return;
             }
             completedVideos.add(videoKey);
@@ -604,10 +625,10 @@ public class VideoHook {
 
             final String fVideoJson = videoJson;
 
-            Toast.makeText(ctx, "正在提交...", Toast.LENGTH_SHORT).show();
+            PrivateToast.show(ctx, "正在提交...", Toast.LENGTH_SHORT);
             fireBatchComplete(courseVideo, courseVideoClass, () -> {
                 new Handler(Looper.getMainLooper()).post(() -> {
-                    Toast.makeText(ctx, "✓ 视频任务已完成（服务端已接受）", Toast.LENGTH_SHORT).show();
+                    PrivateToast.show(ctx, "✓ 视频任务已完成（服务端已接受）", Toast.LENGTH_SHORT);
                     // ★ 通过 EventBus 通知章节页面更新任务点状态
                     postCompletionEvent(fVideoJson);
                 });
@@ -615,14 +636,14 @@ public class VideoHook {
             // 如果 onSuccess 未触发（服务端 isPassed=false），2 分钟内给用户一个反馈
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 if (!lastBatchPassed) {
-                    Toast.makeText(ctx,
+                    PrivateToast.show(ctx,
                             "⚠ 服务端未接受（签名过期，换设备会同步失败）",
-                            Toast.LENGTH_LONG).show();
+                            Toast.LENGTH_LONG);
                 }
             }, 15_000);
         } catch (Throwable t) {
             Logx.w("VideoHook: complete click failed: " + t.getMessage());
-            Toast.makeText(ctx, "操作失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+            PrivateToast.show(ctx, "操作失败: " + t.getMessage(), Toast.LENGTH_SHORT);
         }
     }
 
@@ -637,7 +658,7 @@ public class VideoHook {
             // ABSVideoView.setSpeed(float)
             Method setSpeed = player.getClass().getMethod("setSpeed", float.class);
             setSpeed.invoke(player, speed);
-            Toast.makeText(ctx, speed + "x", Toast.LENGTH_SHORT).show();
+            PrivateToast.show(ctx, speed + "x", Toast.LENGTH_SHORT);
         } catch (Throwable t) {
             Logx.w("VideoHook: setSpeed failed: " + t.getMessage());
         }
@@ -756,23 +777,45 @@ public class VideoHook {
                 Logx.i("VideoHook[DBG] duration=" + durationSec + " rt=" + rt
                         + " clipTime=" + clipTime + " otherInfo=" + otherInfo);
 
-                // 模拟: START → 4 个 PLAYING → COMPLETE
-                int step = Math.max(durationSec / 5, 1);
-                // TYPE_START
+                // ── 方案 B：高 rt 突破（瞬时完成尝试）──
+                //   v6.7+ 服务端按 rt 校验播放速率：playingDelta ≤ rt × realDelta
+                //   先把 rt 拉到极高（8.0），赌服务端按上报值放行，可在 ~3 秒内通过。
+                //   一旦 ② 拿到 isPassed=true 直接结束；失败则进入方案 A 慢速节奏上报。
+                int passSec = Math.max(1, (int) Math.round(durationSec * 0.45));
+                double boostRt = Math.max(rt, 8.0);
+
                 sendReport(reportUrl, otherInfo, "0", durationSec, jobid,
-                        clipTime, clazzId, objectId, puid, 3, rt, 0);
-                Thread.sleep(2000);
+                        clipTime, clazzId, objectId, puid, 3, boostRt, 0);
+                Thread.sleep(1500);
 
-                // TYPE_PLAYING 模拟进度
-                for (int sec = step; sec < durationSec; sec += step) {
-                    sendReport(reportUrl, otherInfo, String.valueOf(sec), durationSec,
-                            jobid, clipTime, clazzId, objectId, puid, 0, rt, sec);
-                    Thread.sleep(2000);
+                sendReport(reportUrl, otherInfo, String.valueOf(passSec), durationSec,
+                        jobid, clipTime, clazzId, objectId, puid, 0, boostRt, passSec);
+                Thread.sleep(2500);
+
+                if (lastBatchPassed) {
+                    Logx.i("VideoHook: [PhaseB] passed via boostRt=" + boostRt
+                            + " at " + passSec + "s");
+                    sendReport(reportUrl, otherInfo, String.valueOf(durationSec), durationSec,
+                            jobid, clipTime, clazzId, objectId, puid, 4, boostRt, durationSec);
+                } else {
+                    // ── 方案 A：慢速节奏上报（保证通过率，但耗时 ≈ 视频时长 × 0.55）──
+                    //   每 tick 真实间隔 5s，playingTime 推进 min(rt,1.0) × 5 ≈ 4-5s（保守 4s）
+                    //   达到 45% 阈值后等服务端确认 isPassed；不通过则继续推进直到结束。
+                    Logx.w("VideoHook: [PhaseB] failed, falling back to [PhaseA] slow-tick");
+                    int realStep = 5; // 每次真实 sleep 5s
+                    int playStep = Math.max(1, (int) Math.floor(Math.min(rt, 1.0) * realStep));
+                    int pt = 0;
+                    while (pt < durationSec && !lastBatchPassed) {
+                        pt = Math.min(durationSec, pt + playStep);
+                        sendReport(reportUrl, otherInfo, String.valueOf(pt), durationSec,
+                                jobid, clipTime, clazzId, objectId, puid, 0, rt, pt);
+                        if (pt >= durationSec) break;
+                        Thread.sleep(realStep * 1000L);
+                    }
+                    // TYPE_COMPLETE
+                    sendReport(reportUrl, otherInfo, String.valueOf(durationSec), durationSec,
+                            jobid, clipTime, clazzId, objectId, puid, 4, rt, durationSec);
                 }
-
-                // TYPE_COMPLETE
-                sendReport(reportUrl, otherInfo, String.valueOf(durationSec), durationSec,
-                        jobid, clipTime, clazzId, objectId, puid, 4, rt, durationSec);
 
                 Logx.i("VideoHook: batch complete sent (d=" + durationSec + "s), serverPassed=" + lastBatchPassed);
                 if (!lastBatchPassed) {
@@ -1042,5 +1085,143 @@ public class VideoHook {
         return (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, dp,
                 ctx.getResources().getDisplayMetrics());
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  真实视频上报流量监听
+    //  目的：用户正常观看视频时，App 自身会向 /multimedia/log 等接口发出进度/完成
+    //       上报。Hook OkHttp 的 Request.Builder.build() 与 ResponseBody.string()，
+    //       在不改写任何参数的前提下：
+    //        ① 抓出 App 自己计算好的真实 enc / clipTime / 各参数；
+    //        ② 监听服务端响应中的 isPassed 值，确认本机当前 enc 算法是否仍然被认可。
+    //       这样：
+    //        - 一键完成（fireBatchComplete）若复用相同 enc 算法，可把"自然观看 isPassed=true"
+    //          作为 enc 算法仍生效的实时探针，并把 lastBatchPassed 标记为通过；
+    //        - 若服务端升级了签名规则，监听日志会立即可见 isPassed=false，便于诊断。
+    // ──────────────────────────────────────────────────────────────
+    private void hookReportTrafficMonitor() {
+        try {
+            Class<?> reqBuilderClass = Class.forName("okhttp3.Request$Builder", false, cl);
+            Class<?> reqClass = Class.forName("okhttp3.Request", false, cl);
+            Method buildMethod = reqBuilderClass.getDeclaredMethod("build");
+            Method requestUrlMethod = reqClass.getDeclaredMethod("url");
+
+            module.hook(buildMethod).intercept(chain -> {
+                Object request = chain.proceed();
+                try {
+                    if (request != null) {
+                        Object httpUrl = requestUrlMethod.invoke(request);
+                        String url = httpUrl != null ? httpUrl.toString() : null;
+                        if (url != null && isVideoReportUrl(url)) {
+                            long now = System.currentTimeMillis();
+                            lastObservedReportUrl = url;
+                            lastObservedReportAt = now;
+                            String enc = extractQueryParam(url, "enc");
+                            if (enc != null && !enc.isEmpty()) lastObservedEnc = enc;
+                            // 同一 enc 在 LOG_DEDUP_WINDOW_MS 窗口内只落盘一次
+                            // （拦截器链的多层 build() 会重复触发同一上报）
+                            boolean dup = enc != null
+                                    && enc.equals(lastLoggedEnc)
+                                    && (now - lastLoggedAt) < LOG_DEDUP_WINDOW_MS;
+                            if (!dup) {
+                                lastLoggedEnc = enc;
+                                lastLoggedAt = now;
+                                String localEnc = computeEncFromUrl(url);
+                                String tail = url.length() > 220 ? url.substring(url.length() - 220) : url;
+                                if (localEnc != null && enc != null) {
+                                    Logx.f("VideoHook[Monitor] real report URL ..." + tail
+                                            + " observedEnc=" + enc
+                                            + " localEnc=" + localEnc
+                                            + " encMatch=" + localEnc.equalsIgnoreCase(enc));
+                                } else {
+                                    Logx.f("VideoHook[Monitor] real report URL ..." + tail);
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                return request;
+            });
+
+            Class<?> responseBodyClass = Class.forName("okhttp3.ResponseBody", false, cl);
+            Method stringMethod = responseBodyClass.getDeclaredMethod("string");
+            module.hook(stringMethod).intercept(chain -> {
+                Object body = chain.proceed();
+                try {
+                    if (body instanceof String) {
+                        String text = (String) body;
+                        long delta = System.currentTimeMillis() - lastObservedReportAt;
+                        if (lastObservedReportUrl != null && delta >= 0 && delta < 8000
+                                && text.length() < 8192
+                                && (text.contains("\"isPassed\"") || text.contains("\"jobid\""))) {
+                            boolean passed = text.contains("\"isPassed\":true")
+                                    || text.contains("\"isPassed\": true");
+                            String oid = extractQueryParam(lastObservedReportUrl, "objectId");
+                            String preview = text.length() > 240 ? text.substring(0, 240) : text;
+                            Logx.f("VideoHook[Monitor] natural report response (oid=" + oid
+                                    + ", passed=" + passed + "): " + preview);
+                            if (passed) {
+                                lastNaturalPassObserved = true;
+                                lastPassedObjectId = oid;
+                                lastBatchPassed = true;
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                return body;
+            });
+            Logx.i("VideoHook: report traffic monitor ready");
+        } catch (ClassNotFoundException e) {
+            Logx.w("VideoHook: OkHttp not found, skip report traffic monitor");
+        } catch (Throwable t) {
+            Logx.w("VideoHook: report traffic monitor hook failed: " + t.getMessage());
+        }
+    }
+
+    /** 判断 URL 是否为视频任务点进度上报：含 enc + jobid，或路径明确包含 multimedia/playduration/dotype=Video */
+    private static boolean isVideoReportUrl(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        if (lower.contains("dtype=video") || lower.contains("multimedia") || lower.contains("playduration")) {
+            return true;
+        }
+        return lower.contains("enc=") && lower.contains("jobid=") && lower.contains("clazzid=");
+    }
+
+    /** 从 URL 查询串中提取参数；不存在返回 null */
+    private static String extractQueryParam(String url, String name) {
+        if (url == null || name == null) return null;
+        int qm = url.indexOf('?');
+        if (qm < 0) return null;
+        String query = url.substring(qm + 1);
+        int hash = query.indexOf('#');
+        if (hash >= 0) query = query.substring(0, hash);
+        String[] parts = query.split("&");
+        String prefix = name + "=";
+        for (String p : parts) {
+            if (p.startsWith(prefix)) {
+                return p.substring(prefix.length());
+            }
+        }
+        return null;
+    }
+
+    /** 用本机 calcEnc 重算给定 URL 的 enc，便于与服务端真实接受的 enc 对比 */
+    private static String computeEncFromUrl(String url) {
+        try {
+            String clazzId = extractQueryParam(url, "clazzId");
+            String userid = extractQueryParam(url, "userid");
+            String jobid = extractQueryParam(url, "jobid");
+            String objectId = extractQueryParam(url, "objectId");
+            String playingTime = extractQueryParam(url, "playingTime");
+            String duration = extractQueryParam(url, "duration");
+            String clipTime = extractQueryParam(url, "clipTime");
+            if (playingTime == null || duration == null) return null;
+            int playSec = Integer.parseInt(playingTime);
+            int durSec = Integer.parseInt(duration);
+            return calcEnc(clazzId, userid, jobid, objectId, playSec, durSec, clipTime);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

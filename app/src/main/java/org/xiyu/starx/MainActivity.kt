@@ -142,6 +142,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_VIDEO = "hook_video_enabled"
         private const val KEY_VIDEO_TIME = "hook_video_time_enabled"
         private const val KEY_EXAM = "hook_exam_enabled"
+        private const val KEY_EXAM_FLOATING_BUTTON = "hook_exam_floating_button_enabled"
         private const val KEY_EXAM_TRIGGER = "hook_exam_trigger"
         private const val EXAM_TRIGGER_VOLUME_DOWN = "volume_down"
         private const val EXAM_TRIGGER_VOLUME_UP = "volume_up"
@@ -196,7 +197,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.homeAnnouncement.text = latestAnnouncementText
         binding.homeBankSummary.text = "默认支持内置公共题库、LemTk 兼容节点、tikuAdapter 标准接口与 zxseek/wkexam 简易接口，也支持自定义 GET / POST JSON 模板。"
         binding.homeBankBadge.text = "题库 3源"
-        binding.homeFeatureSummary.text = "已启用 0/8 项功能"
+        binding.homeFeatureSummary.text = "已启用 0/9 项功能"
         binding.homeAiBadge.text = "AI 未配置"
         binding.homeLocationBadge.text = "定位 待命"
         binding.homeAiSummary.text = "题库未命中时，可配置 OpenAI 兼容或 Gemini 作为兜底。"
@@ -470,7 +471,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchWindow to KEY_WINDOW,
             binding.switchVideo to KEY_VIDEO,
             binding.switchVideoTime to KEY_VIDEO_TIME,
-            binding.switchExam to KEY_EXAM
+            binding.switchExam to KEY_EXAM,
+            binding.switchExamFloatingButton to KEY_EXAM_FLOATING_BUTTON
         )
 
         for ((switch, key) in switchMap) {
@@ -596,6 +598,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchVideo.isChecked = prefs.getBoolean(KEY_VIDEO, true)
             binding.switchVideoTime.isChecked = prefs.getBoolean(KEY_VIDEO_TIME, false)
             binding.switchExam.isChecked = prefs.getBoolean(KEY_EXAM, true)
+            binding.switchExamFloatingButton.isChecked = prefs.getBoolean(KEY_EXAM_FLOATING_BUTTON, true)
         } catch (_: Throwable) {
         } finally {
             switchesLoading = false
@@ -612,9 +615,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchWindow.isChecked,
             binding.switchVideo.isChecked,
             binding.switchVideoTime.isChecked,
-            binding.switchExam.isChecked
+            binding.switchExam.isChecked,
+            binding.switchExamFloatingButton.isChecked
         ).count { it }
-        binding.homeFeatureSummary.text = "已启用 $enabledCount/8 项功能"
+        binding.homeFeatureSummary.text = "已启用 $enabledCount/9 项功能"
     }
 
     private fun loadExamTriggerConfig(service: XposedService) {
