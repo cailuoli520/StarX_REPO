@@ -98,7 +98,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val PREFS_CONFIG = "config"
         private const val PREFS_SIGN = "sign_config"
         private const val RC_MAP_PICKER = 2001
-        private const val TG_GROUP_URL = "https://t.me/+BUfEUGzViTg2YWU1"
+        private const val TG_GROUP_URL = "https://t.me/+zGhLlAQdIXYwZDZl"
         private const val PUBLIC_FEEDBACK_URL = "https://github.com/Mai-xiyu/StarX/issues/new/choose"
         private const val KEY_TIKU_SOURCES_JSON = "tiku_sources_json"
         private const val KEY_TIKU_SOURCE_SCHEMA_VERSION = "tiku_source_schema_version"
