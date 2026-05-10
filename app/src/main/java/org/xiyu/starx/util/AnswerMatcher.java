@@ -149,7 +149,10 @@ public class AnswerMatcher {
     }
 
     /**
-     * Jaccard 字符级相似度
+     * Jaccard 相似度（字符 + 二元 bigram 加权）。
+     * - 单字符集合：覆盖短答案/单字命中。
+     * - 二元 bigram 集合：捕捉词序信息，避免"中国—国中"得满分。
+     * 加权：0.3 * charJaccard + 0.7 * bigramJaccard；若任一文本长度<2 退化为字符 Jaccard。
      */
     public static double jaccardSimilarity(String a, String b) {
         if (a == null || b == null) return 0.0;
@@ -158,15 +161,20 @@ public class AnswerMatcher {
         if (sa.isEmpty() && sb.isEmpty()) return 1.0;
         if (sa.isEmpty() || sb.isEmpty()) return 0.0;
 
-        Set<Character> setA = toCharSet(sa);
-        Set<Character> setB = toCharSet(sb);
+        double charJ = jaccardOf(toCharSet(sa), toCharSet(sb));
+        if (sa.length() < 2 || sb.length() < 2) return charJ;
 
-        Set<Character> intersection = new HashSet<>(setA);
+        double bigramJ = jaccardOf(toBigramSet(sa), toBigramSet(sb));
+        return 0.3 * charJ + 0.7 * bigramJ;
+    }
+
+    private static <T> double jaccardOf(Set<T> setA, Set<T> setB) {
+        if (setA.isEmpty() && setB.isEmpty()) return 1.0;
+        if (setA.isEmpty() || setB.isEmpty()) return 0.0;
+        Set<T> intersection = new HashSet<>(setA);
         intersection.retainAll(setB);
-
-        Set<Character> union = new HashSet<>(setA);
+        Set<T> union = new HashSet<>(setA);
         union.addAll(setB);
-
         return union.isEmpty() ? 0.0 : (double) intersection.size() / union.size();
     }
 
@@ -174,6 +182,14 @@ public class AnswerMatcher {
         Set<Character> set = new HashSet<>();
         for (int i = 0; i < s.length(); i++) {
             set.add(s.charAt(i));
+        }
+        return set;
+    }
+
+    private static Set<String> toBigramSet(String s) {
+        Set<String> set = new HashSet<>();
+        for (int i = 0; i + 1 < s.length(); i++) {
+            set.add(s.substring(i, i + 2));
         }
         return set;
     }

@@ -250,7 +250,7 @@ public class AiApi {
         }
         prompt.append("题目：\n").append(question);
         if (options != null && !options.trim().isEmpty()) {
-            String[] parts = options.split("\\|");
+            String[] parts = options.split("\\r?\\n|\\|");
             if (parts.length > 0) {
                 prompt.append("\n\n选项：\n");
                 for (int i = 0; i < parts.length; i++) {

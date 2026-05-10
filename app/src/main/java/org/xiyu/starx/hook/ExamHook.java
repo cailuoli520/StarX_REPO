@@ -1490,7 +1490,7 @@ public class ExamHook {
      * 若页面没有题块或找不到答案则静默失败，外层 overlay 仍会提示用户。
      */
     private void applyOcrAnswerToActiveWebView(String ocrText, String answer) {
-        applyAnswerToQuestionByText(ocrText, answer, org.xiyu.starx.util.HtmlQuestionExtractor.Type.UNKNOWN, -1);
+        applyAnswerToQuestionByText(ocrText, answer, org.xiyu.starx.util.HtmlQuestionExtractor.Type.UNKNOWN, -1, null);
     }
 
     /**
@@ -1787,7 +1787,8 @@ public class ExamHook {
                 if (Thread.currentThread().isInterrupted()) break;
                 var q = questions.get(i);
                 if (q.stem == null || q.stem.isEmpty()) continue;
-                String dedupKey = q.stem + "|" + (q.options == null ? 0 : q.options.size());
+                String dedupKey = q.stem + "|" + q.type + "|" + (q.itemId == null ? "" : q.itemId)
+                    + "|" + (q.options == null ? 0 : q.options.size());
                 if (!htmlPipelineSolvedStems.add(dedupKey)) {
                     continue; // 本会话内已查过
                 }
@@ -1808,7 +1809,7 @@ public class ExamHook {
                 String src = r.source;
                 Logx.i("★ HTML管线[" + src + "]" + (single ? "[单题]" : "") + " #" + questionNo + " => " + ans);
                 mainHandler.post(() -> {
-                    applyAnswerToQuestionByText(stem, ans, type, idx);
+                    applyAnswerToQuestionByText(stem, ans, type, idx, q.itemId);
                     // 无论自动填写是否成功，都用 Toast 把答案告知用户。
                     try {
                         WebView v = pickActiveExamWebView();
@@ -1877,60 +1878,77 @@ public class ExamHook {
      * 按题干文本定位题块并点选/填写答案；增强了 Zepto 兼容（dispatch touchend + click）。
      * indexHint >= 0 时作为位置回退（当题干无法唯一匹配时按顺序取第 n 个题块）。
      */
-    private void applyAnswerToQuestionByText(String stemText,
-                                             String answer,
-                                             org.xiyu.starx.util.HtmlQuestionExtractor.Type type,
-                                             int indexHint) {
-        if (answer == null || answer.trim().isEmpty()) return;
+    private void applyAnswerToQuestionByText(String stemText, String answer, org.xiyu.starx.util.HtmlQuestionExtractor.Type type, int indexHint, String targetItemId) {
+        if (answer == null || answer.trim().isEmpty()) {
+            Logx.f("ExamHook: apply skip — empty answer (type=" + type + ", idx=" + indexHint + ")");
+            return;
+        }
         WebView webView = pickActiveExamWebView();
-        if (webView == null) return;
+        if (webView == null) {
+            Logx.f("ExamHook: apply skip — no active webView (type=" + type + ", stem-len=" + (stemText==null?0:stemText.length()) + ")");
+            return;
+        }
+        Logx.f("ExamHook: apply enter type=" + type + " idx=" + indexHint + " itemId=" + targetItemId
+                + " stem-len=" + (stemText==null?0:stemText.length()) + " ans-len=" + answer.length());
         try {
             String jsStem = jsonEscapeForJs(stemText == null ? "" : stemText);
             String jsAns = jsonEscapeForJs(answer);
             String jsType = jsonEscapeForJs(type == null ? "unknown" : type.name().toLowerCase(Locale.ROOT));
+            String jsItemId = targetItemId == null ? "null" : jsonEscapeForJs(targetItemId);
             String script =
                 "(function(){try{" +
-                "var stem=" + jsStem + ",ans=" + jsAns + ",type=" + jsType + ",idxHint=" + indexHint + ";" +
+                "var stem=" + jsStem + ",ans=" + jsAns + ",type=" + jsType + ",idxHint=" + indexHint + ",itemId=" + jsItemId + ";" +
                 "function norm(s){return String(s||'').replace(/\\s+/g,'').toLowerCase();}" +
                 "function stripPrefix(s){return String(s||'').replace(/^\\s*[A-Za-z][\\.、:：\\s]\\s*/,'').trim();}" +
                 "function firePress(el){if(!el)return;try{var r=el.getBoundingClientRect();var cx=r.left+r.width/2,cy=r.top+r.height/2;function mk(type){try{var t=new Touch({identifier:Date.now(),target:el,clientX:cx,clientY:cy,pageX:cx,pageY:cy,screenX:cx,screenY:cy});return new TouchEvent(type,{bubbles:true,cancelable:true,composed:true,touches:type==='touchend'?[]:[t],targetTouches:type==='touchend'?[]:[t],changedTouches:[t]});}catch(_){return null;}}function mm(type){try{return new MouseEvent(type,{bubbles:true,cancelable:true,composed:true,view:window,button:0,clientX:cx,clientY:cy});}catch(_){return null;}}var ts=mk('touchstart');if(ts)el.dispatchEvent(ts);var te=mk('touchend');if(te)el.dispatchEvent(te);var md=mm('mousedown');if(md)el.dispatchEvent(md);var mu=mm('mouseup');if(mu)el.dispatchEvent(mu);}catch(_e){}try{el.click();}catch(_e){}try{if(el.tagName==='INPUT'&&(el.type==='radio'||el.type==='checkbox')){el.checked=true;el.dispatchEvent(new Event('change',{bubbles:true}));}}catch(_e){}}" +
                 // 递归穿透 iframe（同源时可以），收集所有可能的题根
-                "function collectRoots(root){var set=[];try{var rs=root.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.Py-mian1,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.pad30,.wid750,.subjectDet,.answer-item,[class*=question],[class*=Question]');for(var i=0;i<rs.length;i++)set.push(rs[i]);var iframes=root.querySelectorAll('iframe,frame');for(var j=0;j<iframes.length;j++){try{var d=iframes[j].contentDocument;if(d)set=set.concat(collectRoots(d));}catch(_e){}}}catch(_e){}return set;}" +
-                "var roots=collectRoots(document);" +
+                "function collectRoots(root){var set=[];try{var rs=root.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.Py-mian1,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question,.pad30,.wid750,.subjectDet,.answer-item,.swiper-slide[data-itemid],.child-question-wrapper[data-itemid],[class*=question],[class*=Question]');for(var i=0;i<rs.length;i++)set.push(rs[i]);var iframes=root.querySelectorAll('iframe,frame');for(var j=0;j<iframes.length;j++){try{var d=iframes[j].contentDocument;if(d)set=set.concat(collectRoots(d));}catch(_e){}}}catch(_e){}return set;}" +
+                "function findAllByItemId(root,id){var hits=[];try{var nodes=root.querySelectorAll('.swiper-slide[data-itemid],.child-question-wrapper[data-itemid],.editorItem[data-itemid],.jdt[data-itemid],[data-itemid]');for(var i=0;i<nodes.length;i++){if(nodes[i].getAttribute('data-itemid')===id)hits.push(nodes[i]);}var iframes=root.querySelectorAll('iframe,frame');for(var j=0;j<iframes.length;j++){try{var d=iframes[j].contentDocument;if(d)hits=hits.concat(findAllByItemId(d,id));}catch(_e){}}}catch(_e){}return hits;}" +
+                "var roots=collectRoots(document);var targetItems=[];" +
+                "if(itemId){targetItems=findAllByItemId(document,itemId); if(targetItems.length){roots=targetItems;}}" +
                 "if(!roots||!roots.length){" +
                 "return 'no_roots';}" +
                 "var best=null,bestScore=0;var stemN=norm(stem);" +
-                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title,.answer-title,h2.titType,.timuStyle,div.ans-cc.timuStyle,h3,h2,.titleStem,.question-title,.titType,.Py-m1-title,.fontLabel');var t=norm(te?te.textContent:r.textContent);if(!t)continue;var score=0;if(stemN&&(t.indexOf(stemN)>=0||stemN.indexOf(t)>=0))score=3;else{var c=0,w=stemN.length;for(var k=0;k<w&&k<40;k++){if(t.indexOf(stemN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,40));}if(score>bestScore){best=r;bestScore=score;}}" +
+                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector? r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title,.answer-title,h2.titType,.timuStyle,div.ans-cc.timuStyle,h3,h2,.titleStem,.question-title,.titType,.Py-m1-title,.fontLabel'):null;var t=norm(te?te.textContent:r.textContent);var score=(itemId&&r.getAttribute&&r.getAttribute('data-itemid')===itemId)?0.8:0;if(t){if(stemN&&(t.indexOf(stemN)>=0||stemN.indexOf(t)>=0))score=3;else{var c=0,w=stemN.length;for(var k=0;k<w&&k<40;k++){if(t.indexOf(stemN.charAt(k))>=0)c++;}score=Math.max(score,c/Math.max(1,Math.min(w,40)));}}if(score>bestScore){best=r;bestScore=score;}}" +
                 "if(!best && idxHint>=0 && idxHint<roots.length)best=roots[idxHint];" +
                 "if(!best){window.__starx_last_dom='no_match:'+roots.length+'roots';return 'no_match';}" +
                 "window.__starx_last_root=(best.outerHTML||'').slice(0,3000);" +
-                "if(type==='fill_blank'||type==='short_answer'){" +
+                "if(type==='fill_blank'||type==='short_answer'||type==='cloze'){" +
                 "function isRealInput(el){if(!el)return false;var tag=(el.tagName||'').toLowerCase();if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t!=='text'&&t!=='search'&&t!=='email'&&t!=='tel'&&t!=='url'&&t!=='number'&&t!=='')return false;return !el.disabled&&!el.readOnly;}if(tag==='textarea')return !el.disabled&&!el.readOnly;if(el.isContentEditable===true)return true;return false;}" +
                 "function visIn(el){if(!el||!el.getBoundingClientRect)return false;var r=el.getBoundingClientRect();if(r.width<4||r.height<4)return false;var st=getComputedStyle(el);return st.display!=='none'&&st.visibility!=='hidden';}" +
-                // 1) 优先在题块内找学习通标准填空输入框
-                "var inputs=[];" +
-                "var cand=best.querySelectorAll('input[name^=blank],textarea[name^=blank],input.ans_input,textarea.ans_input,div.ueditor-container textarea,div[contenteditable=\"true\"]');" +
-                "for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}" +
-                // 2) 否则在题块内找任意 input[type=text]/textarea/contenteditable
-                "if(!inputs.length){cand=best.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
-                // 3) 兜底：全文档找可见真实输入框
-                "if(!inputs.length){cand=document.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
+                "function setVal(el,v){try{var tag=(el.tagName||'').toLowerCase();if(tag==='input'||tag==='textarea'){el.focus();el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}if(el.isContentEditable){el.focus();try{el.innerText=v;}catch(_){el.textContent=v;}el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}}catch(_e){}return false;}" +
+                // 收集所有可填位置：UEditor iframe body + 普通 input/textarea/contenteditable
+                "function collectFillTargets(scope){var list=[];try{if(isRealInput(scope)&&visIn(scope))list.push(scope);" +
+                // UEditor 的 iframe（同源）
+                "var ifrs=scope.querySelectorAll?scope.querySelectorAll('iframe'):[];" +
+                "for(var fi=0;fi<ifrs.length;fi++){try{var d=ifrs[fi].contentDocument;if(!d)continue;var b=d.body;if(b&&(b.isContentEditable||b.getAttribute('contenteditable')==='true'||b.contentEditable==='true')){list.push(b);}var ces=d.querySelectorAll?d.querySelectorAll('[contenteditable=\"true\"], textarea, input[name^=blank], input.ans_input'):[];for(var ce=0;ce<ces.length;ce++){if(list.indexOf(ces[ce])<0)list.push(ces[ce]);}}catch(_){}}" +
+                // 题块内学习通标准填空
+                "var cand=scope.querySelectorAll?scope.querySelectorAll('input[name^=blank],textarea[name^=blank],input.ans_input,textarea.ans_input,div[contenteditable=\"true\"]'):[];" +
+                "for(var ci=0;ci<cand.length;ci++){var c=cand[ci];if(isRealInput(c)&&visIn(c)&&list.indexOf(c)<0)list.push(c);}" +
+                "}catch(_e){}return list;}" +
+                "var inputs=collectFillTargets(best);if(itemId&&targetItems&&targetItems.length){for(var ti=0;ti<targetItems.length;ti++){var more=collectFillTargets(targetItems[ti]);for(var mi=0;mi<more.length;mi++){if(inputs.indexOf(more[mi])<0)inputs.push(more[mi]);}}}" +
+                // 兜底：题块内任意可见 input/textarea/contenteditable
+                "if(!inputs.length){var cand=best.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
+                // 兜底2：全文档（含 iframe 内）
+                "if(!inputs.length){inputs=collectFillTargets(document);}" +
+                "if(!inputs.length){var cand=document.querySelectorAll('input,textarea,[contenteditable=\"true\"]');for(var ci=0;ci<cand.length;ci++){if(isRealInput(cand[ci])&&visIn(cand[ci]))inputs.push(cand[ci]);}}" +
                 "if(!inputs.length){window.__starx_last_fill='no_input';return 'fill_blank=no_input';}" +
                 "var parts=String(ans).split(/[\\|｜;；\\n]/);" +
-                "function setVal(el,v){try{var tag=(el.tagName||'').toLowerCase();if(tag==='input'||tag==='textarea'){el.focus();el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}if(el.isContentEditable){el.focus();el.innerText=v;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));return true;}}catch(_e){}return false;}" +
+                // 简答题：通常只有一个编辑器，把整个答案塞进第一个目标即可
+                "if(type==='short_answer'&&inputs.length>=1){var v=String(ans).trim();var ok=setVal(inputs[0],v)?1:0;window.__starx_last_fill='short='+ok+'/1;tot='+inputs.length;return 'short_answer='+ok+'/1';}" +
                 "var filled=0;for(var i=0;i<inputs.length;i++){var v=(parts[i]||parts[parts.length-1]||'').trim();if(!v)continue;if(setVal(inputs[i],v))filled++;}" +
                 "window.__starx_last_fill='fill='+filled+'/'+inputs.length;" +
                 "return 'fill_blank='+filled+'/'+inputs.length;" +
                 "}" +
                 "if(type==='true_false'){" +
                 "var t=String(ans).trim();var pos=(t==='对'||t==='正确'||t==='T'||t==='true'||t==='√'||t==='Y'||t==='yes'||t.toLowerCase()==='true');" +
-                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,.optionUl li,div.Answer,div.clearfix.Answer,label.option,.choose_item');" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,div.trueOrFalse,div.child-judgeoption,div.child-trueOrFalse,.optionUl li,div.Answer,div.clearfix.Answer,label.option,.choose_item');" +
                 "if(!opts.length)opts=best.querySelectorAll('li,label,.option,[class*=option],[class*=Option]');" +
                 "function pickTF(opt){var r=opt.querySelector('input[type=radio],input[type=checkbox]');if(r)return r;var l=opt.querySelector('label');if(l)return l;return opt;}" +
                 "for(var i=0;i<opts.length;i++){var raw=(opts[i].innerText||opts[i].textContent||'').trim();var isT=/对|正确|true|√|Yes/i.test(raw);var isF=/错|错误|false|×|No/i.test(raw);if((pos&&isT)||(!pos&&isF)){var pk=pickTF(opts[i]);firePress(pk);return 'tf_clicked:'+(pk.tagName||'?').toLowerCase()+'.'+String(pk.className||'').replace(/\\s+/g,'.');}}" +
                 "return 'tf_no_match';" +
                 "}" +
-                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.singleChoice,div.mulChoice,.singleoption,.optionUl li,div.Answer,div.clearfix.Answer,label.option,.choose_item,li.more-choose-item,.more-choose-item');" +
+                "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.singleChoice,div.mulChoice,div.child-singleChoice,div.child-mulChoice,.singleoption,.optionUl li,div.Answer,div.clearfix.Answer,label.option,.choose_item,li.more-choose-item,.more-choose-item');" +
                 "if(!opts||!opts.length){opts=best.querySelectorAll('li,label,.option,[class*=option],[class*=Option]');}" +
                 "if(!opts||!opts.length){window.__starx_last_no_opts=(best.outerHTML||'').slice(0,3000);return 'no_options';}" +
                 "function desc(el){if(!el)return '';var s=(el.tagName||'?').toLowerCase();if(el.id)s+='#'+el.id;if(el.className)s+='.'+String(el.className).replace(/\\s+/g,'.');var t=(el.innerText||el.textContent||'').trim().replace(/\\s+/g,' ');if(t.length>40)t=t.slice(0,40);return s+'['+t+']';}" +
@@ -1942,7 +1960,7 @@ public class ExamHook {
                 "return opt;}" +
                 "var letters=(String(ans).match(/[A-Za-z]/g)||[]).map(function(c){return c.toUpperCase();});" +
                 "var ansText=norm(stripPrefix(ans));var clicked=0;var lastPick='';var lastOpt='';" +
-                "var multi=(type==='multi_select'||type==='multi_choice'||letters.length>1);" +
+                "var multi=(type==='multiple_choice'||type==='multi_select'||type==='multi_choice'||letters.length>1);" +
                 "for(var i=0;i<opts.length;i++){" +
                 "var opt=opts[i];" +
                 "var keyEl=opt.querySelector('span.check,span.choose,span.dxcheck,span.No,span.num');" +
@@ -1957,12 +1975,12 @@ public class ExamHook {
                 "return 'clicked='+clicked+';opts='+opts.length+';pick='+lastPick+';opt='+lastOpt;" +
                 "}catch(e){return 'err:'+e.message;}})()";
             webView.evaluateJavascript(script, value -> {
-                Logx.i("ExamHook: answer apply #" + indexHint + " => " + value);
+                Logx.f("ExamHook: answer apply #" + indexHint + " type=" + type + " => " + value);
                 // 诊断：当没找到根/选项时，把 WebView 里的 snapshot dump 到 logcat
-                if (value != null && (value.contains("no_roots") || value.contains("no_match") || value.contains("no_options"))) {
+                if (value != null && (value.contains("no_roots") || value.contains("no_match") || value.contains("no_options") || value.contains("no_input"))) {
                     webView.evaluateJavascript(
-                            "(function(){try{return (window.__starx_last_no_opts||window.__starx_last_root||window.__starx_last_dom||'');}catch(e){return '';}})()",
-                            dom -> Logx.i("ExamHook: dom-snapshot(len=" + (dom == null ? 0 : dom.length()) + ")=" + truncate(dom, 1200)));
+                            "(function(){try{return (window.__starx_last_no_opts||window.__starx_last_root||window.__starx_last_dom||window.__starx_last_fill||'');}catch(e){return '';}})()",
+                            dom -> Logx.f("ExamHook: dom-snapshot(len=" + (dom == null ? 0 : dom.length()) + ")=" + truncate(dom, 1200)));
                 }
             });
         } catch (Throwable t) {
@@ -2032,13 +2050,13 @@ public class ExamHook {
             String jsAns = jsonEscapeForJs(answer);
             String script =
                 "(function(){try{" +
-                "var ocr=" + jsOcr + ";var ans=" + jsAns + ";" +
+                "var ocr=" + jsOcr + ";var ans=" + jsAns + ";var itemId=null;" +
                 "function norm(s){return String(s||'').replace(/\\s+/g,'').toLowerCase();}" +
                 "function stripOptPrefix(s){return String(s||'').replace(/^[\\s]*[A-Za-z][\\.、:：\\s]\\s*/,'').trim();}" +
                 "var roots=document.querySelectorAll('.TiMu,.tiMu,.singleQuesId,.questionLi,.queBox,.mark_item,.questionItem,.exam-item,.pad_question');" +
                 "if(!roots||!roots.length)return 'no_roots';" +
                 "var ocrN=norm(ocr),best=null,bestScore=0;" +
-                "for(var i=0;i<roots.length;i++){var r=roots[i];var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title');var t=norm((te?te.textContent:r.textContent));if(!t)continue;var score=0;if(ocrN&&(t.indexOf(ocrN)>=0||ocrN.indexOf(t)>=0))score=2;else{var c=0,w=ocrN.length;for(var k=0;k<w&&k<32;k++){if(t.indexOf(ocrN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,32));}if(score>bestScore){best=r;bestScore=score;}}" +
+                "for(var i=0;i<roots.length;i++){var r=roots[i];if(itemId && r.getAttribute('data-itemid')===itemId){best=r;break;}var te=r.querySelector('.Zy_TItle,.mark_name,.stem,.q-title');var t=norm((te?te.textContent:r.textContent));if(!t)continue;var score=0;if(ocrN&&(t.indexOf(ocrN)>=0||ocrN.indexOf(t)>=0))score=2;else{var c=0,w=ocrN.length;for(var k=0;k<w&&k<32;k++){if(t.indexOf(ocrN.charAt(k))>=0)c++;}score=c/Math.max(1,Math.min(w,32));}if(score>bestScore){best=r;bestScore=score;}}" +
                 "if(!best)return 'no_match';" +
                 "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.radio_option,.checkbox_option,.optionUl li,.optionItem');" +
                 "if(!opts||!opts.length)return 'no_options';" +

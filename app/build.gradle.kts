@@ -10,8 +10,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 36
-        versionCode = 21
-        versionName = "1.3.3"
+        versionCode = 23
+        versionName = "1.3.5"
     }
 
     buildTypes {

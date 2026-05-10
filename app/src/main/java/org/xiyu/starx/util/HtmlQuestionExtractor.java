@@ -26,15 +26,21 @@ import java.util.regex.Pattern;
 public final class HtmlQuestionExtractor {
 
     public enum Type {
-        SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE, FILL_BLANK, SHORT_ANSWER, UNKNOWN;
+        SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE, FILL_BLANK, SHORT_ANSWER,
+        READING_COMPREHENSION, CLOZE, UNKNOWN;
 
         public static Type fromTitle(String title) {
             if (title == null) return UNKNOWN;
-            if (title.contains("单选")) return SINGLE_CHOICE;
-            if (title.contains("多选")) return MULTIPLE_CHOICE;
-            if (title.contains("判断")) return TRUE_FALSE;
-            if (title.contains("填空")) return FILL_BLANK;
-            if (title.contains("简答")) return SHORT_ANSWER;
+            String text = title.replaceAll("\\s+", "");
+            if (text.contains("阅读理解")) return READING_COMPREHENSION;
+            if (text.contains("完形填空") || text.contains("完型填空")) return CLOZE;
+            if (text.contains("单选")) return SINGLE_CHOICE;
+            if (text.contains("多选")) return MULTIPLE_CHOICE;
+            if (text.contains("判断")) return TRUE_FALSE;
+            if (text.contains("填空")) return FILL_BLANK;
+            if (text.contains("简答") || text.contains("名词解释") || text.contains("论述")
+                    || text.contains("问答") || text.contains("简述") || text.contains("解答")
+                    || text.contains("材料分析") || text.contains("案例分析")) return SHORT_ANSWER;
             return UNKNOWN;
         }
 
@@ -65,6 +71,7 @@ public final class HtmlQuestionExtractor {
         public List<Option> options = Collections.emptyList();
         public int blankCount = 0;
         public int index = -1;
+        public String itemId = null;
 
         /** 格式化为 AnswerProvider 所需的 options 字符串（A.xxx\nB.yyy）。 */
         public String optionsAsText() {
@@ -126,16 +133,33 @@ public final class HtmlQuestionExtractor {
             java.util.Set<String> seen = new java.util.HashSet<>();
             for (Element el : pick) {
                 try {
-                    Question q;
+                    List<Question> parsed = new ArrayList<>();
                     switch (mode) {
-                        case "exam": q = parseExam(el); break;
-                        case "quiz": q = parseQuiz(el); break;
-                        case "chapter": q = parseChapter(el); break;
-                        default:     q = parseWork(el); break;
+                        case "exam":
+                            parsed.addAll(parseExamQuestions(el));
+                            break;
+                        case "quiz": {
+                            Question q = parseQuiz(el);
+                            if (q != null) parsed.add(q);
+                            break;
+                        }
+                        case "chapter": {
+                            Question q = parseChapter(el);
+                            if (q != null) parsed.add(q);
+                            break;
+                        }
+                        default: {
+                            Question q = parseWork(el);
+                            if (q != null) parsed.add(q);
+                            break;
+                        }
                     }
-                    if (q == null || q.stem == null || q.stem.isEmpty()) continue;
-                    if (!seen.add(q.stem)) continue;
-                    out.add(q);
+                    for (Question q : parsed) {
+                        if (q == null || q.stem == null || q.stem.isEmpty()) continue;
+                        String key = q.stem + "|" + (q.itemId == null ? "" : q.itemId);
+                        if (!seen.add(key)) continue;
+                        out.add(q);
+                    }
                 } catch (Throwable t) {
                     Logx.w("HtmlQuestionExtractor: skip bad block: " + t.getMessage());
                 }
@@ -154,6 +178,7 @@ public final class HtmlQuestionExtractor {
         if (titleEl == null) return null;
         String title = titleEl.text().trim();
         Question q = new Question();
+        q.itemId = readQuestionItemId(el);
         q.index = extractIndex(title);
         q.type = Type.fromTitle(title);
         Element stemEl = el.selectFirst("div.ans-cc.timuStyle");
@@ -163,6 +188,7 @@ public final class HtmlQuestionExtractor {
         } else {
             q.options = extractWorkOptions(el, title);
         }
+        normalizeQuestionShape(q, el, title);
         return q;
     }
 
@@ -193,6 +219,7 @@ public final class HtmlQuestionExtractor {
         if (titleEl == null) return null;
         Element typeEl = titleEl.selectFirst("span.gray");
         Question q = new Question();
+        q.itemId = readQuestionItemId(el);
         q.type = Type.fromTitle(typeEl != null ? typeEl.text() : "");
         Element stemEl = titleEl.selectFirst("span.html-content-box");
         String stem = stemEl != null ? stemEl.text().trim() : "";
@@ -212,6 +239,7 @@ public final class HtmlQuestionExtractor {
             }
             q.options = list;
         }
+        normalizeQuestionShape(q, el, typeEl != null ? typeEl.text() : "");
         return q;
     }
 
@@ -224,6 +252,7 @@ public final class HtmlQuestionExtractor {
         if (titleEl == null) return null;
         String raw = titleEl.text().trim();
         Question q = new Question();
+        q.itemId = readQuestionItemId(el);
         String stem = raw;
         Matcher m = CHAPTER_TITLE_PAT.matcher(raw);
         if (m.find()) {
@@ -259,47 +288,251 @@ public final class HtmlQuestionExtractor {
             }
             q.options = list;
         }
+        normalizeQuestionShape(q, el, raw);
         return q;
     }
 
     // ---------- 考试页 ----------
+    private static List<Question> parseExamQuestions(Element el) {
+        List<Question> children = parseCompositeChildren(el);
+        if (!children.isEmpty()) return children;
+        Question q = parseExam(el);
+        if (q == null) return Collections.emptyList();
+        return Collections.singletonList(q);
+    }
+
+    private static List<Question> parseCompositeChildren(Element el) {
+        Elements slides = el.select(".readingComprehension .swiper-slide[data-itemid],"
+                + ".clozeQuestion .swiper-slide[data-itemid],"
+                + ".wanxingtiankong .swiper-slide[data-itemid],"
+                + ".swiper-slide.slidescroll[data-itemid],"
+                + ".child-question-wrapper[data-itemid]");
+        if (slides.isEmpty()) return Collections.emptyList();
+
+        List<Element> ordered = new ArrayList<>(slides);
+        Collections.sort(ordered, (a, b) -> Boolean.compare(!isVisibleCompositeChild(a), !isVisibleCompositeChild(b)));
+
+        String parentType = readExamTypeName(el);
+        String passage = extractCompositePassage(el);
+        List<Question> out = new ArrayList<>();
+        for (Element slide : ordered) {
+            Question q = new Question();
+            q.itemId = readQuestionItemId(slide);
+            Element stemEl = slide.selectFirst("h3.tit, .tit, .stem, .q-title, .mark_name, .Zy_TItle");
+            String childStem = compactText(stemEl != null ? stemEl.text() : slide.text());
+            if (childStem.isEmpty()) continue;
+            q.stem = passage.isEmpty() ? childStem : passage + "\n" + childStem;
+            q.index = extractIndex(childStem);
+            q.type = inferExamLeafType(slide, childStem, parentType);
+            q.options = extractExamOptions(slide, q.type);
+            normalizeQuestionShape(q, slide, childStem + " " + parentType);
+            out.add(q);
+        }
+        return out;
+    }
+
     private static Question parseExam(Element el) {
         Question q = new Question();
+        q.itemId = readQuestionItemId(el);
         // 题干
-        Element stemEl = el.selectFirst("div.mark_name, div.Zy_TItle, div.q-title, .stem");
+        Element stemEl = el.selectFirst("div.mark_name, div.Zy_TItle, div.q-title, .stem, .answerCon > .pad30 > .tit");
         String stem = stemEl != null ? stemEl.text().trim() : el.text().trim();
         q.stem = stem;
         // 题型判定
-        q.type = Type.fromTitle(stem);
-        if (q.type == Type.UNKNOWN) {
-            if (el.select("div.singleChoice").size() > 0) q.type = Type.SINGLE_CHOICE;
-            else if (el.select("div.mulChoice").size() > 0) q.type = Type.MULTIPLE_CHOICE;
-            else if (el.select("div.judgeoption, div.trueOrFalse").size() > 0) q.type = Type.TRUE_FALSE;
-        }
+        String typeTitle = readExamTypeName(el);
+        q.type = inferExamLeafType(el, stem, typeTitle);
         // 选项
         if (q.type == Type.SINGLE_CHOICE || q.type == Type.MULTIPLE_CHOICE || q.type == Type.TRUE_FALSE) {
-            List<Option> list = new ArrayList<>();
-            String container = q.type == Type.MULTIPLE_CHOICE ? "mulChoice"
-                    : q.type == Type.TRUE_FALSE ? "trueOrFalse" : "singleChoice";
-            Elements items = el.select("div." + container);
-            if (items.isEmpty() && q.type == Type.TRUE_FALSE) {
-                items = el.select("div.judgeoption");
-            }
-            if (items.isEmpty()) {
-                items = el.select("div.singleoption, div.mulChoice, div.judgeoption");
-            }
-            for (Element opt : items) {
-                Element keyEl = opt.selectFirst("span.No");
-                Element textEl = opt.selectFirst("div.answerInfo");
-                String key = keyEl != null ? keyEl.text().trim() : "";
-                String text = textEl != null ? textEl.text().trim() : opt.text().trim();
-                if (!key.isEmpty() || !text.isEmpty()) list.add(new Option(key, text));
-            }
-            q.options = list;
+            q.options = extractExamOptions(el, q.type);
         } else if (q.type == Type.FILL_BLANK) {
             q.blankCount = extractBlankCount(el);
         }
+        normalizeQuestionShape(q, el, typeTitle + " " + stem);
         return q;
+    }
+
+    private static Type inferExamChoiceType(Element el, Type fallback) {
+        if (el.select("div.mulChoice, div.child-mulChoice").size() > 0) return Type.MULTIPLE_CHOICE;
+        if (el.select("div.judgeoption, div.trueOrFalse, div.child-judgeoption, div.child-trueOrFalse").size() > 0) return Type.TRUE_FALSE;
+        if (el.select("div.singleChoice, div.child-singleChoice, div.singleoption").size() > 0) return Type.SINGLE_CHOICE;
+        return fallback == null ? Type.UNKNOWN : fallback;
+    }
+
+    private static Type inferExamLeafType(Element el, String childTitle, String parentTitle) {
+        Type childHint = Type.fromTitle(childTitle);
+        if (isConcreteLeafType(childHint)) return childHint;
+
+        Type domChoice = inferExamChoiceType(el, Type.UNKNOWN);
+        if (domChoice != Type.UNKNOWN) return domChoice;
+
+        if (looksFillLike(el, childTitle)) return Type.FILL_BLANK;
+        if (hasWritableAnswer(el)) return Type.SHORT_ANSWER;
+
+        Type parentHint = Type.fromTitle(parentTitle);
+        return isConcreteLeafType(parentHint) ? parentHint : Type.UNKNOWN;
+    }
+
+    private static boolean isConcreteLeafType(Type type) {
+        return type == Type.SINGLE_CHOICE
+                || type == Type.MULTIPLE_CHOICE
+                || type == Type.TRUE_FALSE
+                || type == Type.FILL_BLANK
+                || type == Type.SHORT_ANSWER;
+    }
+
+    private static List<Option> extractExamOptions(Element el, Type type) {
+        List<Option> list = new ArrayList<>();
+        Elements items;
+        if (type == Type.MULTIPLE_CHOICE) {
+            items = el.select("div.mulChoice, div.child-mulChoice");
+        } else if (type == Type.TRUE_FALSE) {
+            items = el.select("div.judgeoption, div.trueOrFalse, div.child-judgeoption, div.child-trueOrFalse");
+        } else if (type == Type.SINGLE_CHOICE) {
+            items = el.select("div.singleChoice, div.child-singleChoice, div.singleoption");
+        } else {
+            items = el.select("div.singleChoice, div.mulChoice, div.judgeoption, div.trueOrFalse,"
+                    + "div.child-singleChoice, div.child-mulChoice, div.child-judgeoption, div.child-trueOrFalse, div.singleoption");
+        }
+        if (items.isEmpty()) {
+            items = el.select("li.fl_l, li.clearfix, .answerBg, .option-item, .option_li, .optionItem,"
+                    + "label.option, label.option-item, .choose_item, li.more-choose-item, .more-choose-item");
+        }
+        int optionIndex = 0;
+        for (Element opt : items) {
+            Element keyEl = opt.selectFirst("span.No, span.num, span.check, span.choose, span.dxcheck");
+            Element textEl = opt.selectFirst("div.answerInfo, cc, .answerInfo, .choose-desc, .workTextWrap");
+            String key = keyEl != null ? keyEl.text().trim().replaceAll("[^A-Za-z]", "") : "";
+            if (key.isEmpty()) key = opt.attr("name").trim().replaceAll("[^A-Za-z]", "");
+            String text = textEl != null ? textEl.text().trim() : opt.text().trim();
+            if (key.isEmpty()) key = extractLeadingLetter(text);
+            if (!key.isEmpty() && text.startsWith(key)) text = text.substring(key.length()).trim();
+            text = stripLeadingLetter(text);
+            if (key.isEmpty() && (type == Type.SINGLE_CHOICE || type == Type.MULTIPLE_CHOICE || type == Type.TRUE_FALSE)) {
+                key = String.valueOf((char) ('A' + optionIndex));
+            }
+            if (!key.isEmpty() || !text.isEmpty()) list.add(new Option(key, text));
+            optionIndex++;
+        }
+        return list;
+    }
+
+    private static String readQuestionItemId(Element el) {
+        if (el == null) return null;
+        String id = el.attr("data-itemid").trim();
+        if (!id.isEmpty()) return id;
+        id = el.attr("data").trim();
+        if (!id.isEmpty()) return id;
+        Element dataItem = el.selectFirst("[data-itemid]");
+        if (dataItem != null) {
+            id = dataItem.attr("data-itemid").trim();
+            if (!id.isEmpty()) return id;
+        }
+        Element questionId = el.selectFirst("input[name=questionId], input#questionId");
+        if (questionId != null) {
+            id = questionId.attr("value").trim();
+            if (!id.isEmpty()) return id;
+        }
+        return null;
+    }
+
+    private static String readExamTypeName(Element el) {
+        if (el == null) return "";
+        Element type = el.selectFirst("input[name^=typeName]");
+        return type != null ? type.attr("value").trim() : "";
+    }
+
+    private static boolean isVisibleCompositeChild(Element el) {
+        if (el == null) return false;
+        String style = el.attr("style").toLowerCase(java.util.Locale.ROOT).replace(" ", "");
+        if (style.contains("display:none")) return false;
+        if (style.contains("display:block") || style.contains("height:100%")) return true;
+        String cls = el.className();
+        return cls != null && (cls.contains(" cur") || cls.startsWith("cur ") || cls.equals("cur"));
+    }
+
+    private static String extractCompositePassage(Element el) {
+        Element passageEl = el.selectFirst(".answerCon.readAnswerCon .tit, .answerCon.readAnswerCon, .readAnswerCon .tit");
+        if (passageEl == null) {
+            Element typeName = el.selectFirst("input[name^=typeName][value*=阅读], input[name^=typeName][value*=完]");
+            if (typeName != null) passageEl = el.selectFirst(".answerCon > .pad30 > .tit, .answerCon .tit");
+        }
+        return compactText(passageEl != null ? passageEl.text() : "");
+    }
+
+    private static String compactText(String s) {
+        if (s == null) return "";
+        return s.replace('\u00a0', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private static void normalizeQuestionShape(Question q, Element el, String titleHint) {
+        if (q == null || el == null) return;
+        Type hinted = Type.fromTitle(titleHint);
+        if (q.type == Type.UNKNOWN && isConcreteLeafType(hinted)) q.type = hinted;
+
+        if (q.type == Type.UNKNOWN) {
+            Type domChoice = inferExamChoiceType(el, Type.UNKNOWN);
+            if (domChoice != Type.UNKNOWN) q.type = domChoice;
+        }
+
+        if (q.type == Type.READING_COMPREHENSION || q.type == Type.CLOZE) {
+            if (q.options != null && !q.options.isEmpty()) {
+                q.type = inferExamChoiceType(el, Type.UNKNOWN);
+            } else if (looksFillLike(el, titleHint)) {
+                q.type = Type.FILL_BLANK;
+            } else if (hasWritableAnswer(el)) {
+                q.type = Type.SHORT_ANSWER;
+            }
+        }
+
+        if ((q.type == Type.UNKNOWN || q.type == Type.SHORT_ANSWER) && looksFillLike(el, titleHint)) {
+            q.type = Type.FILL_BLANK;
+        } else if (q.type == Type.UNKNOWN && hasWritableAnswer(el)) {
+            q.type = Type.SHORT_ANSWER;
+        }
+
+        if ((q.type == Type.UNKNOWN || q.type == Type.SINGLE_CHOICE) && q.options != null && !q.options.isEmpty()) {
+            Type inferred = inferOptionOnlyType(q.options);
+            if (q.type == Type.UNKNOWN || inferred == Type.TRUE_FALSE) q.type = inferred;
+        }
+
+        if (q.type == Type.READING_COMPREHENSION || q.type == Type.CLOZE) {
+            q.type = Type.UNKNOWN;
+        }
+
+        if (q.type == Type.FILL_BLANK) {
+            q.blankCount = Math.max(1, extractBlankCount(el));
+            q.options = Collections.emptyList();
+        } else if (q.type == Type.SHORT_ANSWER) {
+            q.options = Collections.emptyList();
+        }
+    }
+
+    private static Type inferOptionOnlyType(List<Option> options) {
+        if (options == null || options.isEmpty()) return Type.UNKNOWN;
+        if (options.size() == 2) {
+            String joined = (options.get(0).text + options.get(1).text).replaceAll("\\s+", "");
+            if (joined.contains("对") || joined.contains("错")
+                    || joined.toLowerCase(java.util.Locale.ROOT).contains("true")
+                    || joined.toLowerCase(java.util.Locale.ROOT).contains("false")) {
+                return Type.TRUE_FALSE;
+            }
+        }
+        return Type.SINGLE_CHOICE;
+    }
+
+    private static boolean looksFillLike(Element el, String titleHint) {
+        String text = titleHint == null ? "" : titleHint;
+        if (text.contains("____") || text.contains("填空")) return true;
+        return el.select("input[name^=blank], textarea[name^=blank], input[name^=blankNum],"
+                + ".completionList, [blankobj], .blank, [data-itemid*=blank]").size() > 0;
+    }
+
+    private static boolean hasWritableAnswer(Element el) {
+        return el.select(".editorItem, .jdt, .editorContainer, .edui-editor, div.ueditor-container,"
+                + "textarea[name^=answer], textarea.zsh_area, textarea[name=editorValue],"
+                + "input[name^=answer], [contenteditable=true], iframe[id^=ueditor]").size() > 0;
     }
 
     // ---------- 工具 ----------
@@ -309,7 +542,7 @@ public final class HtmlQuestionExtractor {
      * 通用 fallback：识别"1. 单选题 / 单选 / 判断"这种新版简洁 UI 页面。
      *
      * 策略：
-     * 1. 扫描所有包含"单选|多选|判断|填空|简答"的小容器（带或不带"N. xxx"前缀），视为题号标记。
+      * 1. 扫描所有包含常见题型名的小容器（带或不带"N. xxx"前缀），视为题号标记。
      * 2. 从该标记向后取同级/紧邻的长文本块当题干，向后取带 A-Z 字母或 radio/checkbox 的节点当选项。
      * 3. 去重 + 按题干非空过滤。
      */
@@ -317,7 +550,7 @@ public final class HtmlQuestionExtractor {
         List<Question> out = new ArrayList<>();
         java.util.Set<String> seenStems = new java.util.HashSet<>();
         Elements all = doc.select("body *");
-        Pattern typeMarker = Pattern.compile("(?:^|[\\s\\.])(单选题|多选题|判断题|填空题|简答题|单选|多选|判断|填空|简答)");
+        Pattern typeMarker = Pattern.compile("(?:^|[\\s\\.])(单选题|多选题|判断题|填空题|简答题|名词解释|论述题|问答题|阅读理解|完形填空|完型填空|材料分析|案例分析|单选|多选|判断|填空|简答|论述)");
         for (Element candidate : all) {
             String own = candidate.ownText();
             if (own == null || own.length() > 40 || own.length() < 2) continue;
@@ -341,6 +574,7 @@ public final class HtmlQuestionExtractor {
             } else if (q.type == Type.FILL_BLANK) {
                 q.blankCount = Math.max(1, extractBlankCount(root));
             }
+            normalizeQuestionShape(q, root, own + " " + stem);
             out.add(q);
         }
         return out;

@@ -1,4 +1,4 @@
-package org.xiyu.starx
+﻿package org.xiyu.starx
 
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
@@ -107,15 +107,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_AUTO_TARGET_LAT = "auto_target_lat"
         private const val KEY_AUTO_TARGET_LNG = "auto_target_lng"
         private const val KEY_AUTO_TARGET_ADDR = "auto_target_addr"
-        private const val KEY_SIGN_CODE = "assist_sign_code"
-        private const val KEY_QR_PAYLOAD = "assist_qr_payload"
-        private const val KEY_H5_QR_PAYLOAD = "assist_qr_h5_payload"
-        private const val KEY_NATIVE_QR_PAYLOAD = "assist_qr_native_payload"
-        private const val KEY_PHOTO_URI = "assist_photo_uri"
-        private const val KEY_SIGN_LAST_MODE = "assist_last_mode"
-        private const val KEY_SIGN_LAST_ACTION = "assist_last_action"
-        private const val KEY_SIGN_LAST_URL = "assist_last_url"
-        private const val KEY_SIGN_LAST_AT = "assist_last_at"
         private const val ZXSEEK_PRESET_SCHEMA_VERSION = 2
         private const val TIKU_SOURCE_SCHEMA_VERSION = 4
         private const val PRESET_TIKU_SOURCE_COUNT = 3
@@ -143,6 +134,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
         private const val KEY_VIDEO_TIME = "hook_video_time_enabled"
         private const val KEY_EXAM = "hook_exam_enabled"
         private const val KEY_EXAM_FLOATING_BUTTON = "hook_exam_floating_button_enabled"
+        private const val KEY_TOAST = "hook_toast_enabled"
         private const val KEY_EXAM_TRIGGER = "hook_exam_trigger"
         private const val EXAM_TRIGGER_VOLUME_DOWN = "volume_down"
         private const val EXAM_TRIGGER_VOLUME_UP = "volume_up"
@@ -207,7 +199,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.profileDeviceInfo.text = "设备信息待获取"
         binding.switchAutoSignTarget.isChecked = true
         binding.textAutoLocationStatus.text = "自动抓取已开启，进入定位签到页后会自动更新目标区域。"
-        binding.textSignAssistStatus.text = "可分别预填手势口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露签到码，也会自动尝试提取并提交。"
         updateDisconnectedUi()
         val defaults = defaultTikuSources()
         bindTikuSources(defaults)
@@ -299,7 +290,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
                 loadSwitchStates(service)
                 loadExamTriggerConfig(service)
                 loadLocationConfig(service)
-                loadSignAssistConfig(service)
                 loadAiConfig(service)
                 loadTikuConfig(service)
                 updateLicenseStatus(service)
@@ -317,7 +307,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.frameworkDetail.visibility = View.GONE
         binding.scopeStatus.text = "作用域: 等待框架连接"
         binding.homeLicenseSummary.text = "许可状态待连接框架后读取。"
-        binding.textSignAssistStatus.text = "等待框架连接后加载签到辅助配置。"
         applyExamTriggerMode(EXAM_TRIGGER_VOLUME_DOWN)
     }
 
@@ -472,7 +461,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchVideo to KEY_VIDEO,
             binding.switchVideoTime to KEY_VIDEO_TIME,
             binding.switchExam to KEY_EXAM,
-            binding.switchExamFloatingButton to KEY_EXAM_FLOATING_BUTTON
+            binding.switchExamFloatingButton to KEY_EXAM_FLOATING_BUTTON,
+            binding.switchToast to KEY_TOAST
         )
 
         for ((switch, key) in switchMap) {
@@ -496,7 +486,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
     private fun setupButtons() {
         binding.btnSaveLocation.setOnClickListener { saveLocationConfig() }
         binding.btnPickMap.setOnClickListener { openMapPicker() }
-        binding.btnSaveSignAssist.setOnClickListener { saveSignAssistConfig() }
         binding.btnSaveAi.setOnClickListener { saveAiConfig() }
         binding.btnAddTikuSource.setOnClickListener { addTikuSourceEditor(newCustomTikuSource()) }
         binding.btnSaveTiku.setOnClickListener { saveTikuConfig() }
@@ -599,6 +588,7 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchVideoTime.isChecked = prefs.getBoolean(KEY_VIDEO_TIME, false)
             binding.switchExam.isChecked = prefs.getBoolean(KEY_EXAM, true)
             binding.switchExamFloatingButton.isChecked = prefs.getBoolean(KEY_EXAM_FLOATING_BUTTON, true)
+            binding.switchToast.isChecked = prefs.getBoolean(KEY_TOAST, true)
         } catch (_: Throwable) {
         } finally {
             switchesLoading = false
@@ -616,9 +606,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             binding.switchVideo.isChecked,
             binding.switchVideoTime.isChecked,
             binding.switchExam.isChecked,
-            binding.switchExamFloatingButton.isChecked
+            binding.switchExamFloatingButton.isChecked,
+            binding.switchToast.isChecked
         ).count { it }
-        binding.homeFeatureSummary.text = "已启用 $enabledCount/9 项功能"
+        binding.homeFeatureSummary.text = "已启用 $enabledCount/10 项功能"
     }
 
     private fun loadExamTriggerConfig(service: XposedService) {
@@ -805,140 +796,6 @@ class MainActivity : Activity(), App.ServiceStateListener {
             hasAuto -> "已自动捕获签到目标坐标 ${formatCoordinate(autoLat)}, ${formatCoordinate(autoLng)}。"
             autoEnabled -> "进入定位签到页面后会自动抓取目标位置并写回本地。"
             else -> "自动抓取已关闭，需要手动填写定位信息。"
-        }
-    }
-
-    private fun loadSignAssistConfig(service: XposedService) {
-        try {
-            val prefs = service.getRemotePreferences(PREFS_SIGN)
-            val signCode = prefs.getString(KEY_SIGN_CODE, "") ?: ""
-            val legacyQrPayload = prefs.getString(KEY_QR_PAYLOAD, "") ?: ""
-            var h5QrPayload = prefs.getString(KEY_H5_QR_PAYLOAD, "") ?: ""
-            var nativeQrPayload = prefs.getString(KEY_NATIVE_QR_PAYLOAD, "") ?: ""
-            if (h5QrPayload.isBlank() && nativeQrPayload.isBlank() && legacyQrPayload.isNotBlank()) {
-                val (legacyH5, legacyNative) = splitLegacyQrPayload(legacyQrPayload)
-                h5QrPayload = legacyH5
-                nativeQrPayload = legacyNative
-            }
-            val photoUri = prefs.getString(KEY_PHOTO_URI, "") ?: ""
-            val lastMode = prefs.getString(KEY_SIGN_LAST_MODE, "") ?: ""
-            val lastAction = prefs.getString(KEY_SIGN_LAST_ACTION, "") ?: ""
-            val lastUrl = prefs.getString(KEY_SIGN_LAST_URL, "") ?: ""
-            val lastAt = prefs.getLong(KEY_SIGN_LAST_AT, 0L)
-
-            binding.editSignCode.setText(signCode)
-            binding.editH5QrPayload.setText(h5QrPayload)
-            binding.editNativeQrPayload.setText(nativeQrPayload)
-            binding.editPhotoUri.setText(photoUri)
-            updateSignAssistStatus(lastMode, lastAction, lastUrl, lastAt, signCode, h5QrPayload, nativeQrPayload, photoUri)
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun saveSignAssistConfig() {
-        val service = mService
-        if (service == null) {
-            Toast.makeText(this, "框架未连接，无法保存", Toast.LENGTH_SHORT).show()
-            return
-        }
-        try {
-            val signCode = binding.editSignCode.text.toString().trim()
-            val h5QrPayload = binding.editH5QrPayload.text.toString().trim()
-            val nativeQrPayload = binding.editNativeQrPayload.text.toString().trim()
-            val photoUri = binding.editPhotoUri.text.toString().trim()
-            service.getRemotePreferences(PREFS_SIGN)
-                .edit()
-                .putString(KEY_SIGN_CODE, signCode)
-                .putString(KEY_H5_QR_PAYLOAD, h5QrPayload)
-                .putString(KEY_NATIVE_QR_PAYLOAD, nativeQrPayload)
-                .remove(KEY_QR_PAYLOAD)
-                .putString(KEY_PHOTO_URI, photoUri)
-                .apply()
-            loadSignAssistConfig(service)
-            Toast.makeText(this, "签到辅助配置已保存", Toast.LENGTH_SHORT).show()
-        } catch (e: Throwable) {
-            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun updateSignAssistStatus(
-        lastMode: String,
-        lastAction: String,
-        lastUrl: String,
-        lastAt: Long,
-        signCode: String,
-        h5QrPayload: String,
-        nativeQrPayload: String,
-        photoUri: String
-    ) {
-        val configuredItems = mutableListOf<String>()
-        if (signCode.isNotBlank()) configuredItems += "签到口令"
-        if (h5QrPayload.isNotBlank()) configuredItems += "H5 二维码"
-        if (nativeQrPayload.isNotBlank()) configuredItems += "原生扫码"
-        if (photoUri.isNotBlank()) configuredItems += "拍照 URI"
-        val configured = configuredItems.size
-        val configuredSummary = if (configuredItems.isEmpty()) "未配置" else configuredItems.joinToString("、")
-        binding.textSignAssistStatus.text = when {
-            lastMode.isNotBlank() -> buildString {
-                append("已配置 $configured/4 项（")
-                append(configuredSummary)
-                append("）。最近识别到")
-                append(lastMode)
-                if (lastAction.isNotBlank()) {
-                    append("，")
-                    append(lastAction)
-                }
-                if (lastAt > 0L) {
-                    append("（")
-                    append(formatTime(lastAt))
-                    append("）")
-                }
-                if (lastUrl.isNotBlank()) {
-                    append("。")
-                    append(lastUrl)
-                }
-            }
-            configured > 0 -> "已配置 $configured/4 项辅助参数（$configuredSummary）；H5 rcode 与原生 signId/time 会分开使用，互不串线。"
-            else -> "可分别预填签到口令、H5 rcode、原生 signId/time 载荷与拍照签到图片 URI；页面若暴露口令，也会自动尝试提取并提交。"
-        }
-    }
-
-    private fun splitLegacyQrPayload(rawPayload: String): Pair<String, String> {
-        val trimmed = rawPayload.trim()
-        if (trimmed.isEmpty()) return "" to ""
-        return if (normalizeNativeQrPayload(trimmed).isNotBlank()) {
-            "" to trimmed
-        } else {
-            trimmed to ""
-        }
-    }
-
-    private fun normalizeNativeQrPayload(rawPayload: String): String {
-        val trimmed = rawPayload.trim()
-        if (trimmed.isEmpty()) return ""
-        return try {
-            val json = JSONObject(trimmed)
-            if (json.optString("signId", "").isNotEmpty() && json.optString("time", "").isNotEmpty()) {
-                json.toString()
-            } else {
-                ""
-            }
-        } catch (_: Throwable) {
-            try {
-                val uri = Uri.parse(trimmed)
-                val signId = uri.getQueryParameter("signId")
-                val time = uri.getQueryParameter("time")
-                if (!signId.isNullOrEmpty() && !time.isNullOrEmpty()) {
-                    JSONObject().apply {
-                        put("signId", signId)
-                        put("time", time)
-                    }.toString()
-                } else {
-                    ""
-                }
-            } catch (_: Throwable) {
-                ""
-            }
         }
     }
 

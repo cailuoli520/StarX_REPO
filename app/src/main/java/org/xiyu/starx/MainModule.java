@@ -20,6 +20,7 @@ import org.xiyu.starx.license.HookConfig;
 import org.xiyu.starx.license.LicenseManager;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
+import org.xiyu.starx.util.PrivateToast;
 import org.xiyu.starx.util.QuestionCache;
 
 import io.github.libxposed.api.XposedModule;
@@ -56,9 +57,14 @@ public class MainModule extends XposedModule {
             var appOnCreate = Application.class.getDeclaredMethod("onCreate");
             hook(appOnCreate).intercept(chain -> {
                 Object result = chain.proceed();
-                Application app = (Application) chain.getThisObject();
-                if (app != null && CxClasses.TARGET_PACKAGE.equals(app.getPackageName())) {
-                    initializeHooks(cl);
+                try {
+                    Application app = (Application) chain.getThisObject();
+                    if (app != null && CxClasses.TARGET_PACKAGE.equals(app.getPackageName())) {
+                        try { org.xiyu.starx.util.DebugFlags.initOnInstall(app); } catch (Throwable ignored) {}
+                        initializeHooks(cl);
+                    }
+                } catch (Throwable t) {
+                    Logx.e("[boot] FATAL: initializeHooks threw, app continues", t);
                 }
                 return result;
             });
@@ -66,7 +72,11 @@ public class MainModule extends XposedModule {
         } catch (Throwable t) {
             Logx.e("Failed to hook Application.onCreate, trying direct init", t);
             // 回退方案: 直接尝试初始化
-            initializeHooks(cl);
+            try {
+                initializeHooks(cl);
+            } catch (Throwable t2) {
+                Logx.e("[boot] FATAL: direct initializeHooks threw", t2);
+            }
         }
     }
 
@@ -74,11 +84,20 @@ public class MainModule extends XposedModule {
         if (initialized) return;
         initialized = true;
 
-        Logx.i("initializeHooks: starting...");
+        Logx.f("[boot] initializeHooks: starting...");
 
         // ======== 许可证验证 — 未激活时仅运行免费功能 ========
-        LicenseManager license = new LicenseManager(this);
-        HookConfig config = license.getConfig();
+        LicenseManager license;
+        HookConfig config;
+        try {
+            Logx.f("[boot] LicenseManager: pre");
+            license = new LicenseManager(this);
+            config = license.getConfig();
+            Logx.f("[boot] LicenseManager: ok config=" + (config == null ? "null" : ("v" + config.version)));
+        } catch (Throwable t) {
+            Logx.e("[boot] LicenseManager FAILED, fallback to free mode", t);
+            config = null;
+        }
         if (config == null) {
             Logx.w("StarX: license not active, running in free mode (ads skip only)");
             // 免费功能：广告跳过 — 不依赖服务端配置，本地特征匹配
@@ -129,6 +148,9 @@ public class MainModule extends XposedModule {
             windowOn = switchPrefs.getBoolean("hook_window_enabled", true);
             videoOn = switchPrefs.getBoolean("hook_video_enabled", true);
             examOn = switchPrefs.getBoolean("hook_exam_enabled", true);
+            // 全局 Toast 开关：默认开启（接管所有 PrivateToast）
+            boolean toastOn = switchPrefs.getBoolean("hook_toast_enabled", true);
+            PrivateToast.setEnabled(toastOn);
         } catch (Throwable t) {
             Logx.w("Failed to read hook switches, all enabled by default");
         }
@@ -136,9 +158,11 @@ public class MainModule extends XposedModule {
         // === 最高优先级: 反检测绕过 (必须在其他 Hook 之前) ===
         if (detectionOn) {
             try {
+                Logx.f("[boot] DetectionBypassHook: pre");
                 new DetectionBypassHook(this, cl).hook();
+                Logx.f("[boot] DetectionBypassHook: ok");
             } catch (Throwable t) {
-                Logx.e("DetectionBypassHook failed", t);
+                Logx.e("[boot] DetectionBypassHook failed", t);
             }
         } else {
             Logx.i("DetectionBypassHook: disabled by user");
@@ -147,9 +171,11 @@ public class MainModule extends XposedModule {
         // === 功能 Hook ===
         if (adsOn) {
             try {
+                Logx.f("[boot] AdsHook: pre");
                 new AdsHook(this, cl).hook();
+                Logx.f("[boot] AdsHook: ok");
             } catch (Throwable t) {
-                Logx.e("AdsHook failed", t);
+                Logx.e("[boot] AdsHook failed", t);
             }
         } else {
             Logx.i("AdsHook: disabled by user");
@@ -157,9 +183,11 @@ public class MainModule extends XposedModule {
 
         if (signinOn) {
             try {
+                Logx.f("[boot] SignInHook: pre");
                 new SignInHook(this, cl).hook();
+                Logx.f("[boot] SignInHook: ok");
             } catch (Throwable t) {
-                Logx.e("SignInHook failed", t);
+                Logx.e("[boot] SignInHook failed", t);
             }
         } else {
             Logx.i("SignInHook: disabled by user");
@@ -167,9 +195,11 @@ public class MainModule extends XposedModule {
 
         if (anticheatOn) {
             try {
+                Logx.f("[boot] AntiCheatHook: pre");
                 new AntiCheatHook(this, cl).hook();
+                Logx.f("[boot] AntiCheatHook: ok");
             } catch (Throwable t) {
-                Logx.e("AntiCheatHook failed", t);
+                Logx.e("[boot] AntiCheatHook failed", t);
             }
         } else {
             Logx.i("AntiCheatHook: disabled by user");
@@ -177,9 +207,11 @@ public class MainModule extends XposedModule {
 
         if (windowOn) {
             try {
+                Logx.f("[boot] WindowHook: pre");
                 new WindowHook(this, cl).hook();
+                Logx.f("[boot] WindowHook: ok");
             } catch (Throwable t) {
-                Logx.e("WindowHook failed", t);
+                Logx.e("[boot] WindowHook failed", t);
             }
         } else {
             Logx.i("WindowHook: disabled by user");
@@ -201,9 +233,11 @@ public class MainModule extends XposedModule {
                 } catch (Throwable t) {
                     Logx.w("AI config load failed: " + t.getMessage());
                 }
+                Logx.f("[boot] ExamHook: pre");
                 new ExamHook(this, cl, answerProvider, config.jsInject).hook();
+                Logx.f("[boot] ExamHook: ok");
             } catch (Throwable t) {
-                Logx.e("ExamHook failed", t);
+                Logx.e("[boot] ExamHook failed", t);
             }
         } else {
             Logx.i("ExamHook: disabled by user");
@@ -211,14 +245,16 @@ public class MainModule extends XposedModule {
 
         if (videoOn) {
             try {
+                Logx.f("[boot] VideoHook: pre");
                 new VideoHook(this, cl).hook();
+                Logx.f("[boot] VideoHook: ok");
             } catch (Throwable t) {
-                Logx.e("VideoHook failed", t);
+                Logx.e("[boot] VideoHook failed", t);
             }
         } else {
             Logx.i("VideoHook: disabled by user");
         }
 
-        Logx.i("All hooks initialized");
+        Logx.f("[boot] All hooks initialized");
     }
 }

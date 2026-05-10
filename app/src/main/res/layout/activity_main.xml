@@ -431,6 +431,7 @@
                     <Switch android:id="@+id/switch_video_time" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="视频进度加速" android:textColor="@color/ios_label" />
                     <Switch android:id="@+id/switch_exam" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="搜题与测验" android:textColor="@color/ios_label" />
                     <Switch android:id="@+id/switch_exam_floating_button" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="搜题悬浮按钮" android:textColor="@color/ios_label" />
+                    <Switch android:id="@+id/switch_toast" style="@style/Widget_StarX_Switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="模块 Toast 提示（默认接管全局）" android:textColor="@color/ios_label" />
 
                     <TextView
                         android:id="@+id/text_exam_trigger_status"
@@ -574,134 +575,9 @@
 
                 <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:orientation="vertical"
-                    android:background="@drawable/card_bg"
-                    android:padding="20dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="签到辅助"
-                        android:textColor="@color/ios_label"
-                        android:textSize="18sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="支持签到口令、H5 二维码参数与拍照签到图片 URI。原生扫码仅支持 signId/time JSON 或带这两个参数的 URL；H5 与原生扫码可分别独立保存。"
-                        android:textColor="@color/ios_secondary_label"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/text_sign_assist_status"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="进入签到页后会自动识别签到口令、H5 二维码参数和拍照签到模式；原生扫码只会读取独立的 signId/time 载荷。"
-                        android:textColor="@color/ios_secondary_label"
-                        android:textSize="13sp" />
-
-                    <EditText
-                        android:id="@+id/edit_sign_code"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:background="@drawable/ios_input_bg"
-                        android:hint="签到口令（留空则尝试自动提取）"
-                        android:padding="14dp"
-                        android:textColor="@color/ios_label"
-                        android:textColorHint="@color/ios_tertiary_label" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:text="H5 二维码参数"
-                        android:textColor="@color/ios_label"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <EditText
-                        android:id="@+id/edit_h5_qr_payload"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:background="@drawable/ios_input_bg"
-                        android:gravity="top|start"
-                        android:hint="填写 rcode，或包含 rcode 的 URL / JSON"
-                        android:minLines="2"
-                        android:padding="14dp"
-                        android:textColor="@color/ios_label"
-                        android:textColorHint="@color/ios_tertiary_label" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="用于 H5 签到页；留空时仍会优先尝试页面自动提取。"
-                        android:textColor="@color/ios_secondary_label"
-                        android:textSize="12sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:text="原生扫码载荷"
-                        android:textColor="@color/ios_label"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <EditText
-                        android:id="@+id/edit_native_qr_payload"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:background="@drawable/ios_input_bg"
-                        android:gravity="top|start"
-                        android:hint="填写 signId/time JSON，或带这两个参数的 URL"
-                        android:minLines="2"
-                        android:padding="14dp"
-                        android:textColor="@color/ios_label"
-                        android:textColorHint="@color/ios_tertiary_label" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="仅原生扫码页使用，不会再和 H5 字段共用同一份配置。"
-                        android:textColor="@color/ios_secondary_label"
-                        android:textSize="12sp" />
-
-                    <EditText
-                        android:id="@+id/edit_photo_uri"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:background="@drawable/ios_input_bg"
-                        android:hint="拍照签到图片 URI 或文件路径"
-                        android:inputType="textUri"
-                        android:padding="14dp"
-                        android:textColor="@color/ios_label"
-                        android:textColorHint="@color/ios_tertiary_label" />
-
-                    <Button
-                        android:id="@+id/btn_save_sign_assist"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:background="@drawable/btn_primary_bg"
-                        android:text="保存签到辅助配置"
-                        android:textAllCaps="false"
-                        android:textColor="@android:color/white" />
-                </LinearLayout>
+                    android:layout_height="0dp"
+                    android:visibility="gone"
+                    android:orientation="vertical" />
             </LinearLayout>
         </ScrollView>
 
@@ -900,6 +776,45 @@
                     android:text="保存 AI 配置"
                     android:textAllCaps="false"
                     android:textColor="@android:color/white" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_test_openai"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:background="@drawable/btn_map_secondary"
+                        android:text="测试 OpenAI"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ios_label" />
+
+                    <Button
+                        android:id="@+id/btn_test_gemini"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/btn_map_secondary"
+                        android:text="测试 Gemini"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ios_label" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_reload_ai"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/btn_map_secondary"
+                    android:text="从配置重新加载"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ios_label" />
             </LinearLayout>
         </ScrollView>
 

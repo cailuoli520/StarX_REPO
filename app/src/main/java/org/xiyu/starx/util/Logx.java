@@ -70,6 +70,28 @@ public final class Logx {
         appendToFile(msg);
     }
 
+    /**
+     * 把任意大文本（HTML/JSON/DOM 快照等）落盘到 StarX/dump/&lt;name&gt;。
+     * 返回最终绝对路径，失败返回 null。文件会被覆盖写入。
+     */
+    public static String dumpToFile(String name, String content) {
+        try {
+            File log = ensureLogFile();
+            if (log == null) return null;
+            File dumpDir = new File(log.getParentFile(), "dump");
+            if (!dumpDir.exists()) dumpDir.mkdirs();
+            File out = new File(dumpDir, name);
+            try (Writer w = new OutputStreamWriter(
+                    new FileOutputStream(out, false), "UTF-8")) {
+                if (content != null) w.write(content);
+            }
+            return out.getAbsolutePath();
+        } catch (Throwable t) {
+            Log.w(TAG, "Logx.dumpToFile failed: " + t.getMessage());
+            return null;
+        }
+    }
+
     private static void appendToFile(String msg) {
         try {
             File file = ensureLogFile();
