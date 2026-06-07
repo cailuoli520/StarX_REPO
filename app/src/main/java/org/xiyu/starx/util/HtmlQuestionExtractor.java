@@ -72,6 +72,7 @@ public final class HtmlQuestionExtractor {
         public int blankCount = 0;
         public int index = -1;
         public String itemId = null;
+        public boolean isAnswered = false;
 
         /** 格式化为 AnswerProvider 所需的 options 字符串（A.xxx\nB.yyy）。 */
         public String optionsAsText() {
@@ -466,8 +467,98 @@ public final class HtmlQuestionExtractor {
                 .trim();
     }
 
+    public static String cleanStem(String stem) {
+        if (stem == null) return "";
+        String cleaned = stem.trim();
+
+        String[] patterns = {
+            "\\(?单选题\\(必考\\)\\)?",
+            "\\(?填空题\\(必考\\)\\)?",
+            "\\(?多选题\\(必考\\)\\)?",
+            "\\(?判断题\\(必考\\)\\)?",
+            "【(?:单选题|多选题|填空题|判断题|單選题|多選题|判斷题|Single Choice|Multiple Choice|single choice|multiple choice|True or False|单选|多选|判断|填空|简答题|问答题|简答)】",
+            "\\[(?:单选题|多选题|填空题|判断题|單選题|多選题|判斷题|Single Choice|Multiple Choice|single choice|multiple choice|True or False|单选|多选|判断|填空|简答题|问答题|简答)\\]",
+            "\\((?:单选题|多选题|填空题|判断题|單選题|多選题|判斷题|Single Choice|Multiple Choice|single choice|multiple choice|True or False|单选|多选|判断|填空|简答题|问答题|简答)\\)",
+            "（(?:单选题|多选题|填空题|判断题|單選题|多選题|判斷题|Single Choice|Multiple Choice|single choice|multiple choice|True or False|单选|多选|判断|填空|简答题|问答题|简答)）"
+        };
+
+        for (String pat : patterns) {
+            cleaned = Pattern.compile(pat, Pattern.CASE_INSENSITIVE).matcher(cleaned).replaceAll("");
+        }
+
+        cleaned = cleaned.replaceFirst("^(单选题|多选题|填空题|判断题|单选|多选|判断|填空|简答题|问答题|简答)[:：\\s]+", "");
+        cleaned = cleaned.replaceFirst("^\\s*[0-9]+[\\.、：:\\s\\)-]\\s*", "");
+        cleaned = cleaned.replaceFirst("^\\s*[0-9]+\\s+", "");
+        cleaned = cleaned.replaceFirst("^\\s*\\([0-9]+\\)\\s*", "");
+        cleaned = cleaned.replaceFirst("^\\s*（[0-9]+）\\s*", "");
+        cleaned = cleaned.replaceFirst("^\\s*\\[[0-9]+\\]\\s*", "");
+        cleaned = cleaned.replaceFirst("^\\s*[一二三四五六七八九十百]+[\\.、：:\\s]\\s*", "");
+        cleaned = cleaned.replaceAll("(?i)[\\(（\\[]【?\\s*\\d+(?:\\.\\d+)?分(?:\\s*,\\s*必考)?\\s*】?[\\)）\\]]", "");
+
+        return cleaned.trim();
+    }
+
+    private static boolean checkIfAnswered(Question q, Element el) {
+        if (q == null || el == null) return false;
+
+        if (q.type == Type.SINGLE_CHOICE || q.type == Type.MULTIPLE_CHOICE || q.type == Type.TRUE_FALSE) {
+            Elements inputs = el.select("input[type=radio], input[type=checkbox]");
+            for (Element input : inputs) {
+                if (input.hasAttr("checked")) {
+                    return true;
+                }
+            }
+            Elements selectedOpts = el.select(".check_on, .checked, .selected, .active, .cur, .check_radio[class*=checked], .check_checkbox[class*=checked]");
+            if (!selectedOpts.isEmpty()) {
+                return true;
+            }
+        }
+
+        if (q.type == Type.FILL_BLANK) {
+            Elements inputs = el.select("input[name^=blank], textarea[name^=blank], input.ans_input, textarea.ans_input");
+            if (inputs.isEmpty()) {
+                inputs = el.select("input[type=text], textarea");
+            }
+            int filledCount = 0;
+            for (Element input : inputs) {
+                String val = input.attr("value");
+                if (val != null && !val.trim().isEmpty()) {
+                    filledCount++;
+                }
+            }
+            if (filledCount > 0 && filledCount >= q.blankCount) {
+                return true;
+            }
+        }
+
+        if (q.type == Type.SHORT_ANSWER) {
+            Elements textareas = el.select("textarea");
+            for (Element ta : textareas) {
+                String val = ta.attr("value");
+                if (val == null || val.isEmpty()) {
+                    val = ta.text();
+                }
+                if (val != null && !val.trim().isEmpty()) {
+                    return true;
+                }
+            }
+            Elements editors = el.select("[contenteditable=true]");
+            for (Element ed : editors) {
+                String txt = ed.text().trim();
+                if (!txt.isEmpty() && !txt.equals("请在此输入答案") && !txt.equals("输入答案...")) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static void normalizeQuestionShape(Question q, Element el, String titleHint) {
         if (q == null || el == null) return;
+        
+        q.stem = cleanStem(q.stem);
+
         Type hinted = Type.fromTitle(titleHint);
         if (q.type == Type.UNKNOWN && isConcreteLeafType(hinted)) q.type = hinted;
 
@@ -507,6 +598,8 @@ public final class HtmlQuestionExtractor {
         } else if (q.type == Type.SHORT_ANSWER) {
             q.options = Collections.emptyList();
         }
+
+        q.isAnswered = checkIfAnswered(q, el);
     }
 
     private static Type inferOptionOnlyType(List<Option> options) {

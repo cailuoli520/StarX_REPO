@@ -520,6 +520,7 @@ public class ExamHook {
                     mainHandler.postDelayed(() -> injectStarXScript(wv), 4000);
                     // HTML 管线：抓 outerHTML → jsoup 解析 → 查答 → 自动填写
                     mainHandler.postDelayed(() -> launchHtmlPipeline(wv), HTML_PIPELINE_CAPTURE_DELAY_MS);
+                    mainHandler.postDelayed(() -> launchHtmlPipeline(wv), 5000);
                     // 注入独立悬浮 AI 搜题按钮（带标签）
                     mainHandler.postDelayed(() -> injectFloatingAiButton(wv), 1800);
                     mainHandler.postDelayed(() -> injectFloatingAiButton(wv), 4200);
@@ -641,10 +642,14 @@ public class ExamHook {
                     notifyStatus(webView, payload.optString("message", ""), payload.optInt("durationMs", 0));
                     break;
                 case "kickHtmlPipeline":
-                    // JS 侧按钮触发 HTML 管线（不走截屏/OCR），绕开旧 doSearch 的 MediaProjection 路径
+                    // JS 侧按钮触发 HTML 管线（不走截屏/OCR），绕开旧 doSearch 的 MediaProjection 路径。
+                    // 与音量键/悬浮按钮一致：只搜当前题一次，绝不开启自动翻页链。
                     mainHandler.post(() -> {
                         lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
-                        launchHtmlPipeline(webView);
+                        autoNextChainRequested = false;
+                        autoNextChainCount.set(0);
+                        singleQuestionMode = true;
+                        launchHtmlPipeline(webView, true);
                     });
                     result = "ok";
                     break;
@@ -797,6 +802,8 @@ public class ExamHook {
                 if ("1".equals(normalized)) {
                     Logx.i("ExamHook: question probe matched => " + url);
                     injectStarXScript(webView);
+                    mainHandler.postDelayed(() -> launchHtmlPipeline(webView), HTML_PIPELINE_CAPTURE_DELAY_MS);
+                    mainHandler.postDelayed(() -> launchHtmlPipeline(webView), 5000);
                 }
             });
         } catch (Throwable t) {
@@ -944,7 +951,11 @@ public class ExamHook {
             try {
                 mainHandler.post(() -> {
                     lastHtmlPipelineRunAt.remove(System.identityHashCode(webView));
-                    launchHtmlPipeline(webView);
+                    // 手动按钮：只搜当前题一次，不进入自动翻页链
+                    autoNextChainRequested = false;
+                    autoNextChainCount.set(0);
+                    singleQuestionMode = true;
+                    launchHtmlPipeline(webView, true);
                 });
             } catch (Throwable t) {
                 Logx.w("ExamHook[JS→Java]: kickHtmlPipeline failed: " + t.getMessage());
@@ -1477,7 +1488,7 @@ public class ExamHook {
             autoNextChainRequested = false;
             autoNextChainCount.set(0);
             singleQuestionMode = true;
-            launchHtmlPipeline(webView);
+            launchHtmlPipeline(webView, true);
         });
         return true;
     }
@@ -1633,7 +1644,7 @@ public class ExamHook {
                     autoNextChainRequested = false;
                     autoNextChainCount.set(0);
                     singleQuestionMode = true;
-                    launchHtmlPipeline(webViewRef);
+                    launchHtmlPipeline(webViewRef, true);
                 } catch (Throwable t) {
                     Logx.w("ExamHook: AI button click failed: " + t.getMessage());
                 }
@@ -1707,9 +1718,27 @@ public class ExamHook {
         }
     }
 
-    /** 外部入口：onPageFinished 中，考试/作业页命中后触发。 */
+    /** 外部入口：onPageFinished 中，考试/作业页命中后触发（自动来源）。 */
     private void launchHtmlPipeline(WebView wv) {
+        launchHtmlPipeline(wv, false);
+    }
+
+    /**
+     * HTML 管线统一入口。
+     *
+     * @param wv 目标 WebView。
+     * @param manualOneShot 是否为用户手动触发的一次性请求（音量键 / 悬浮按钮 / JS 桥按钮）。
+     *                      true：忽略触发模式开关，强制单题搜答一次，不开启自动翻页链。
+     *                      false：onPageFinished 等自动来源，只在 AUTO 模式下才真正搜题，
+     *                      避免“音量键模式 + 手动翻页”被自动接管成半自动答题。
+     */
+    private void launchHtmlPipeline(WebView wv, boolean manualOneShot) {
         if (wv == null || !isHtmlPipelineEnabled()) return;
+        // 自动来源（onPageFinished / 自动翻页后重跑）只在 AUTO 模式下放行，
+        // 否则非全自动触发方式只能在用户显式触发那一刻搜一次当前题。
+        if (!manualOneShot && !EXAM_TRIGGER_AUTO.equals(readExamTriggerMode())) {
+            return;
+        }
         int id = System.identityHashCode(wv);
         long now = android.os.SystemClock.uptimeMillis();
         Long last = lastHtmlPipelineRunAt.get(id);
@@ -1717,8 +1746,8 @@ public class ExamHook {
             return; // 3s 内重复触发跳过
         }
         lastHtmlPipelineRunAt.put(id, now);
-        // AUTO 模式：进入题目页即自动展开连答链
-        if (!autoNextChainRequested && isAutoNextEnabled()) {
+        // AUTO 模式：进入题目页即自动展开连答链；手动一次性触发禁止开启链
+        if (!manualOneShot && !autoNextChainRequested && isAutoNextEnabled()) {
             autoNextChainRequested = true;
             autoNextChainCount.set(0);
         }
@@ -1727,7 +1756,23 @@ public class ExamHook {
             String capture =
                 "(function(){try{" +
                 "var parts=[];" +
+                "function sync(d){" +
+                "  try{" +
+                "    if(!d)return;" +
+                "    var ins=d.querySelectorAll('input[type=radio],input[type=checkbox]');" +
+                "    for(var i=0;i<ins.length;i++){" +
+                "      if(ins[i].checked) ins[i].setAttribute('checked','checked');" +
+                "      else ins[i].removeAttribute('checked');" +
+                "    }" +
+                "    var txts=d.querySelectorAll('input[type=text],textarea');" +
+                "    for(var i=0;i<txts.length;i++){" +
+                "      if(txts[i].value) txts[i].setAttribute('value',txts[i].value);" +
+                "      else txts[i].removeAttribute('value');" +
+                "    }" +
+                "  }catch(_e){}" +
+                "}" +
                 "function walk(d,tag){try{if(!d)return;" +
+                "sync(d);" +
                 "var html=(d.documentElement&&d.documentElement.outerHTML)||'';" +
                 "parts.push('<!--'+tag+'-->'+html);" +
                 "var frs=d.querySelectorAll('iframe,frame');" +
@@ -1787,6 +1832,10 @@ public class ExamHook {
                 if (Thread.currentThread().isInterrupted()) break;
                 var q = questions.get(i);
                 if (q.stem == null || q.stem.isEmpty()) continue;
+                if (q.isAnswered) {
+                    Logx.i("ExamHook: html pipeline — question already answered, skip => " + truncate(q.stem, 40));
+                    continue;
+                }
                 String dedupKey = q.stem + "|" + q.type + "|" + (q.itemId == null ? "" : q.itemId)
                     + "|" + (q.options == null ? 0 : q.options.size());
                 if (!htmlPipelineSolvedStems.add(dedupKey)) {
@@ -1906,6 +1955,8 @@ public class ExamHook {
                 "function findAllByItemId(root,id){var hits=[];try{var nodes=root.querySelectorAll('.swiper-slide[data-itemid],.child-question-wrapper[data-itemid],.editorItem[data-itemid],.jdt[data-itemid],[data-itemid]');for(var i=0;i<nodes.length;i++){if(nodes[i].getAttribute('data-itemid')===id)hits.push(nodes[i]);}var iframes=root.querySelectorAll('iframe,frame');for(var j=0;j<iframes.length;j++){try{var d=iframes[j].contentDocument;if(d)hits=hits.concat(findAllByItemId(d,id));}catch(_e){}}}catch(_e){}return hits;}" +
                 "var roots=collectRoots(document);var targetItems=[];" +
                 "if(itemId){targetItems=findAllByItemId(document,itemId); if(targetItems.length){roots=targetItems;}}" +
+                "var filtered=[];for(var i=0;i<roots.length;i++){var isP=false;for(var j=0;j<roots.length;j++){if(i!==j&&roots[i].contains(roots[j])){isP=true;break;}}if(!isP)filtered.push(roots[i]);}" +
+                "roots=filtered;" +
                 "if(!roots||!roots.length){" +
                 "return 'no_roots';}" +
                 "var best=null,bestScore=0;var stemN=norm(stem);" +
@@ -1941,7 +1992,7 @@ public class ExamHook {
                 "return 'fill_blank='+filled+'/'+inputs.length;" +
                 "}" +
                 "if(type==='true_false'){" +
-                "var t=String(ans).trim();var pos=(t==='对'||t==='正确'||t==='T'||t==='true'||t==='√'||t==='Y'||t==='yes'||t.toLowerCase()==='true');" +
+                "var t=String(ans).trim();var pos=/^(对|正确|T|true|√|Y|yes|是|A)$/i.test(t);" +
                 "var opts=best.querySelectorAll('li.fl_l,li.clearfix,.answerBg,.option-item,.option_li,.optionItem,div.judgeoption,div.trueOrFalse,div.child-judgeoption,div.child-trueOrFalse,.optionUl li,div.Answer,div.clearfix.Answer,label.option,.choose_item');" +
                 "if(!opts.length)opts=best.querySelectorAll('li,label,.option,[class*=option],[class*=Option]');" +
                 "function pickTF(opt){var r=opt.querySelector('input[type=radio],input[type=checkbox]');if(r)return r;var l=opt.querySelector('label');if(l)return l;return opt;}" +

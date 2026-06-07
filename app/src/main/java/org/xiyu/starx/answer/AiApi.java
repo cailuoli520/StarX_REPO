@@ -293,6 +293,7 @@ public class AiApi {
         if (cut > 0) normalized = normalized.substring(0, cut).trim();
         cut = normalized.indexOf("\n说明");
         if (cut > 0) normalized = normalized.substring(0, cut).trim();
+        normalized = normalized.replaceAll("[。.，,；;：:！!？?]+$", "").trim();
         if (normalized.contains("无法确定")
                 || normalized.contains("没有足够信息")
                 || normalized.contains("请提供更多")

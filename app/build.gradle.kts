@@ -10,8 +10,17 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 36
-        versionCode = 23
-        versionName = "1.3.5"
+        versionCode = 24
+        versionName = "1.3.6"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("signature.jks")
+            storePassword = "starx123"
+            keyAlias = "starx"
+            keyPassword = "starx123"
+        }
     }
 
     buildTypes {
@@ -19,7 +28,10 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles("proguard-rules.pro")
-            signingConfig = signingConfigs["debug"]
+            signingConfig = signingConfigs["release"]
+        }
+        debug {
+            signingConfig = signingConfigs["release"]
         }
     }
 
