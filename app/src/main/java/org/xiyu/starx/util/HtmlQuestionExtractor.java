@@ -508,7 +508,8 @@ public final class HtmlQuestionExtractor {
                     return true;
                 }
             }
-            Elements selectedOpts = el.select(".check_on, .checked, .selected, .active, .cur, .check_radio[class*=checked], .check_checkbox[class*=checked]");
+            // Removed .active and .cur to prevent matching active slide/tab states
+            Elements selectedOpts = el.select(".check_on, .checked, .selected, .check_radio[class*=checked], .check_checkbox[class*=checked]");
             if (!selectedOpts.isEmpty()) {
                 return true;
             }
@@ -521,6 +522,10 @@ public final class HtmlQuestionExtractor {
             }
             int filledCount = 0;
             for (Element input : inputs) {
+                // Ignore readonly/disabled fields to prevent matching score boxes
+                if (input.hasAttr("readonly") || input.hasAttr("disabled")) {
+                    continue;
+                }
                 String val = input.attr("value");
                 if (val != null && !val.trim().isEmpty()) {
                     filledCount++;
@@ -534,24 +539,44 @@ public final class HtmlQuestionExtractor {
         if (q.type == Type.SHORT_ANSWER) {
             Elements textareas = el.select("textarea");
             for (Element ta : textareas) {
+                if (ta.hasAttr("readonly") || ta.hasAttr("disabled")) {
+                    continue;
+                }
                 String val = ta.attr("value");
                 if (val == null || val.isEmpty()) {
                     val = ta.text();
                 }
                 if (val != null && !val.trim().isEmpty()) {
-                    return true;
+                    String trimmed = val.trim();
+                    if (!isPlaceholder(trimmed)) {
+                        return true;
+                    }
                 }
             }
             Elements editors = el.select("[contenteditable=true]");
             for (Element ed : editors) {
                 String txt = ed.text().trim();
-                if (!txt.isEmpty() && !txt.equals("请在此输入答案") && !txt.equals("输入答案...")) {
+                if (!txt.isEmpty() && !isPlaceholder(txt)) {
                     return true;
                 }
             }
         }
 
         return false;
+    }
+
+    private static boolean isPlaceholder(String text) {
+        if (text == null) return false;
+        String t = text.trim();
+        return t.equals("请在此输入答案")
+                || t.equals("输入答案...")
+                || t.equals("请在此输入答案...")
+                || t.equals("请输入答案")
+                || t.equals("请输入答案...")
+                || t.equals("请写下你的答案")
+                || t.equals("请写下你的答案...")
+                || t.equals("请在这里输入答案")
+                || t.equals("请在这里输入答案...");
     }
 
     private static void normalizeQuestionShape(Question q, Element el, String titleHint) {

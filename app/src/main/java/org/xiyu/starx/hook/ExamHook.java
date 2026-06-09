@@ -1832,7 +1832,8 @@ public class ExamHook {
                 if (Thread.currentThread().isInterrupted()) break;
                 var q = questions.get(i);
                 if (q.stem == null || q.stem.isEmpty()) continue;
-                if (q.isAnswered) {
+                // Allow manual trigger (single == true) to always search and fill even if identified as answered
+                if (!single && q.isAnswered) {
                     Logx.i("ExamHook: html pipeline — question already answered, skip => " + truncate(q.stem, 40));
                     continue;
                 }
