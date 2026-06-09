@@ -344,6 +344,99 @@ public class AiApi {
         }
     }
 
+    public static class TestResult {
+        public final int code;
+        public final String message;
+        public TestResult(int code, String message) {
+            this.code = code;
+            this.message = message;
+        }
+    }
+
+    public TestResult testConnection() {
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            return new TestResult(-1, "API Key 不能为空");
+        }
+
+        String urlStr;
+        String json;
+        String auth = null;
+
+        if (provider == Provider.GEMINI) {
+            String fullPrompt = SYSTEM_PROMPT + "\n\nPing";
+            json = "{\"contents\":[{\"parts\":[{\"text\":\"" + escapeJson(fullPrompt) + "\"}]}],"
+                    + "\"generationConfig\":{\"maxOutputTokens\":10,\"temperature\":0.1}}";
+            urlStr = "https://generativelanguage.googleapis.com/v1beta/models/"
+                    + model + ":generateContent?key=" + apiKey;
+        } else {
+            json = "{\"model\":\"" + escapeJson(model) + "\","
+                    + "\"messages\":["
+                    + "{\"role\":\"user\",\"content\":\"Ping\"}"
+                    + "],\"max_tokens\":10,\"temperature\":0.1}";
+
+            urlStr = baseUrl;
+            if (!urlStr.endsWith("/chat/completions")) {
+                if (!urlStr.endsWith("/")) urlStr += "/";
+                if (!urlStr.endsWith("v1/")) urlStr += "v1/";
+                urlStr += "chat/completions";
+            }
+            auth = "Bearer " + apiKey;
+        }
+
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            ActiveConnection.set(conn);
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            if (auth != null) {
+                conn.setRequestProperty("Authorization", auth);
+            }
+
+            OutputStream os = conn.getOutputStream();
+            os.write(json.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            String errorMsg = "";
+            if (code >= 400) {
+                java.io.InputStream es = conn.getErrorStream();
+                if (es != null) {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(es, "UTF-8"));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                    errorMsg = sb.toString();
+                } else {
+                    errorMsg = conn.getResponseMessage();
+                }
+            } else {
+                java.io.InputStream is = conn.getInputStream();
+                if (is != null) {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                }
+            }
+            return new TestResult(code, errorMsg);
+        } catch (Throwable t) {
+            return new TestResult(-1, t.getMessage());
+        } finally {
+            ActiveConnection.clear();
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
     private static String escapeJson(String s) {
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")

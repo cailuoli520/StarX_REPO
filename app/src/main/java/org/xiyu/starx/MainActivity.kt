@@ -502,13 +502,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             Thread {
                 try {
                     val api = AiApi.openai(key, url, model)
-                    val result = api.ask("1+1=?")
+                    val result = api.testConnection()
                     postIfAlive {
-                        if (result != null && result.isNotBlank()) {
-                            Toast.makeText(this@MainActivity, "OpenAI 连接成功！回答：$result", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(this@MainActivity, "OpenAI 测试失败：连接超时或无有效返回，请检查日志", Toast.LENGTH_LONG).show()
-                        }
+                        val msg = getHttpStatusCodeDescription(result.code, result.message)
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     }
                 } catch (e: Throwable) {
                     postIfAlive {
@@ -529,13 +526,10 @@ class MainActivity : Activity(), App.ServiceStateListener {
             Thread {
                 try {
                     val api = AiApi.gemini(key, model)
-                    val result = api.ask("1+1=?")
+                    val result = api.testConnection()
                     postIfAlive {
-                        if (result != null && result.isNotBlank()) {
-                            Toast.makeText(this@MainActivity, "Gemini 连接成功！回答：$result", Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(this@MainActivity, "Gemini 测试失败：连接超时或无有效返回，请检查日志", Toast.LENGTH_LONG).show()
-                        }
+                        val msg = getHttpStatusCodeDescription(result.code, result.message)
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     }
                 } catch (e: Throwable) {
                     postIfAlive {
@@ -619,6 +613,22 @@ class MainActivity : Activity(), App.ServiceStateListener {
                     }
                 }
             }.start()
+        }
+    }
+
+    private fun getHttpStatusCodeDescription(code: Int, detail: String?): String {
+        val extra = if (detail.isNullOrBlank()) "" else "\n错误详情: $detail"
+        return when (code) {
+            200, 201 -> "连接成功！请求成功，返回正常数据 (HTTP $code)"
+            400 -> "测试失败 (HTTP 400): 请求体格式错误，如 JSON 结构不合法或必填字段缺失。$extra"
+            401 -> "测试失败 (HTTP 401): 未授权，API Key 错误或未提供。$extra"
+            403 -> "测试失败 (HTTP 403): 禁止访问，权限不足。$extra"
+            404 -> "测试失败 (HTTP 404): 接口地址不存在，请检查 Base URL。$extra"
+            429 -> "测试失败 (HTTP 429): 请求频率超限 (Rate Limit)。$extra"
+            500 -> "测试失败 (HTTP 500): 服务器内部错误，非调用方原因。$extra"
+            503 -> "测试失败 (HTTP 503): 服务不可用，可能因超载或维护。$extra"
+            -1 -> "测试失败: 连接超时或域名解析失败 ($detail)"
+            else -> "测试失败 (HTTP $code): 未知错误。$extra"
         }
     }
 
