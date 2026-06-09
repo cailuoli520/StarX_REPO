@@ -307,41 +307,60 @@ public class AiApi {
     // ========== HTTP / Util ==========
 
     private String post(String urlStr, String body, String auth) throws Exception {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        ActiveConnection.set(conn);
-        try {
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(TIMEOUT_MS);
-            conn.setReadTimeout(TIMEOUT_MS);
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            if (auth != null) {
-                conn.setRequestProperty("Authorization", auth);
+        int redirects = 0;
+        String currentUrl = urlStr;
+        while (redirects < 5) {
+            URL url = new URL(currentUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            ActiveConnection.set(conn);
+            try {
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(TIMEOUT_MS);
+                conn.setReadTimeout(TIMEOUT_MS);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                if (auth != null) {
+                    conn.setRequestProperty("Authorization", auth);
+                }
+
+                OutputStream os = conn.getOutputStream();
+                os.write(body.getBytes("UTF-8"));
+                os.flush();
+                os.close();
+
+                int code = conn.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String newUrl = conn.getHeaderField("Location");
+                    if (newUrl != null && !newUrl.isEmpty()) {
+                        if (!newUrl.startsWith("http://") && !newUrl.startsWith("https://")) {
+                            URL base = new URL(currentUrl);
+                            newUrl = new URL(base, newUrl).toString();
+                        }
+                        currentUrl = newUrl;
+                        redirects++;
+                        Logx.i("AiApi: Following redirect to " + currentUrl);
+                        continue;
+                    }
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        code >= 400 ? conn.getErrorStream() : conn.getInputStream(), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+
+                if (code >= 400) {
+                    Logx.w("AiApi: HTTP " + code + " => " + sb);
+                    return null;
+                }
+                return sb.toString();
+            } finally {
+                ActiveConnection.clear();
+                conn.disconnect();
             }
-
-            OutputStream os = conn.getOutputStream();
-            os.write(body.getBytes("UTF-8"));
-            os.flush();
-            os.close();
-
-            int code = conn.getResponseCode();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    code >= 400 ? conn.getErrorStream() : conn.getInputStream(), "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            if (code >= 400) {
-                Logx.w("AiApi: HTTP " + code + " => " + sb);
-                return null;
-            }
-            return sb.toString();
-        } finally {
-            ActiveConnection.clear();
-            conn.disconnect();
         }
+        throw new Exception("重定向次数过多");
     }
 
     public static class TestResult {
@@ -383,58 +402,77 @@ public class AiApi {
             auth = "Bearer " + apiKey;
         }
 
-        HttpURLConnection conn = null;
-        try {
-            URL url = new URL(urlStr);
-            conn = (HttpURLConnection) url.openConnection();
-            ActiveConnection.set(conn);
-            conn.setRequestMethod("POST");
-            conn.setConnectTimeout(TIMEOUT_MS);
-            conn.setReadTimeout(TIMEOUT_MS);
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            if (auth != null) {
-                conn.setRequestProperty("Authorization", auth);
-            }
+        int redirects = 0;
+        String currentUrl = urlStr;
+        while (redirects < 5) {
+            HttpURLConnection conn = null;
+            try {
+                URL url = new URL(currentUrl);
+                conn = (HttpURLConnection) url.openConnection();
+                ActiveConnection.set(conn);
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(TIMEOUT_MS);
+                conn.setReadTimeout(TIMEOUT_MS);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                if (auth != null) {
+                    conn.setRequestProperty("Authorization", auth);
+                }
 
-            OutputStream os = conn.getOutputStream();
-            os.write(json.getBytes("UTF-8"));
-            os.flush();
-            os.close();
+                OutputStream os = conn.getOutputStream();
+                os.write(json.getBytes("UTF-8"));
+                os.flush();
+                os.close();
 
-            int code = conn.getResponseCode();
-            String errorMsg = "";
-            if (code >= 400) {
-                java.io.InputStream es = conn.getErrorStream();
-                if (es != null) {
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(es, "UTF-8"));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-                    errorMsg = sb.toString();
+                int code = conn.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String newUrl = conn.getHeaderField("Location");
+                    if (newUrl != null && !newUrl.isEmpty()) {
+                        if (!newUrl.startsWith("http://") && !newUrl.startsWith("https://")) {
+                            URL base = new URL(currentUrl);
+                            newUrl = new URL(base, newUrl).toString();
+                        }
+                        currentUrl = newUrl;
+                        redirects++;
+                        Logx.i("AiApi (Test): Following redirect to " + currentUrl);
+                        continue;
+                    }
+                }
+
+                String errorMsg = "";
+                if (code >= 400) {
+                    java.io.InputStream es = conn.getErrorStream();
+                    if (es != null) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(es, "UTF-8"));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
+                        errorMsg = sb.toString();
+                    } else {
+                        errorMsg = conn.getResponseMessage();
+                    }
                 } else {
-                    errorMsg = conn.getResponseMessage();
+                    java.io.InputStream is = conn.getInputStream();
+                    if (is != null) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
+                    }
                 }
-            } else {
-                java.io.InputStream is = conn.getInputStream();
-                if (is != null) {
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
+                return new TestResult(code, errorMsg);
+            } catch (Throwable t) {
+                return new TestResult(-1, t.getMessage());
+            } finally {
+                ActiveConnection.clear();
+                if (conn != null) {
+                    conn.disconnect();
                 }
-            }
-            return new TestResult(code, errorMsg);
-        } catch (Throwable t) {
-            return new TestResult(-1, t.getMessage());
-        } finally {
-            ActiveConnection.clear();
-            if (conn != null) {
-                conn.disconnect();
             }
         }
+        return new TestResult(-1, "重定向次数过多");
     }
 
     private static String escapeJson(String s) {
