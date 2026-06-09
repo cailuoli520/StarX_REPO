@@ -30,6 +30,7 @@ import org.json.JSONObject
 import org.xiyu.starx.databinding.ActivityMainBinding
 import org.xiyu.starx.util.QuestionCache
 import org.xiyu.starx.license.LicenseManager
+import org.xiyu.starx.answer.AiApi
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -488,6 +489,61 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.btnSaveLocation.setOnClickListener { saveLocationConfig() }
         binding.btnPickMap.setOnClickListener { openMapPicker() }
         binding.btnSaveAi.setOnClickListener { saveAiConfig() }
+        binding.btnTestOpenai.setOnClickListener {
+            val key = binding.editOpenaiKey.text.toString().trim()
+            if (key.isEmpty()) {
+                Toast.makeText(this, "API Key 不能为空", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val url = normalizeHttpUrl(binding.editOpenaiUrl.text.toString().trim(), keepPath = true)
+            val model = binding.editOpenaiModel.text.toString().trim()
+
+            Toast.makeText(this, "正在测试 OpenAI 连通性...", Toast.LENGTH_SHORT).show()
+            Thread {
+                try {
+                    val api = AiApi.openai(key, url, model)
+                    val result = api.ask("1+1=?")
+                    postIfAlive {
+                        if (result != null && result.isNotBlank()) {
+                            Toast.makeText(this@MainActivity, "OpenAI 连接成功！回答：$result", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "OpenAI 测试失败：连接超时或无有效返回，请检查日志", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Throwable) {
+                    postIfAlive {
+                        Toast.makeText(this@MainActivity, "OpenAI 测试异常: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+        }
+        binding.btnTestGemini.setOnClickListener {
+            val key = binding.editGeminiKey.text.toString().trim()
+            if (key.isEmpty()) {
+                Toast.makeText(this, "API Key 不能为空", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val model = binding.editGeminiModel.text.toString().trim()
+
+            Toast.makeText(this, "正在测试 Gemini 连通性...", Toast.LENGTH_SHORT).show()
+            Thread {
+                try {
+                    val api = AiApi.gemini(key, model)
+                    val result = api.ask("1+1=?")
+                    postIfAlive {
+                        if (result != null && result.isNotBlank()) {
+                            Toast.makeText(this@MainActivity, "Gemini 连接成功！回答：$result", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "Gemini 测试失败：连接超时或无有效返回，请检查日志", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Throwable) {
+                    postIfAlive {
+                        Toast.makeText(this@MainActivity, "Gemini 测试异常: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+        }
         binding.btnAddTikuSource.setOnClickListener { addTikuSourceEditor(newCustomTikuSource()) }
         binding.btnSaveTiku.setOnClickListener { saveTikuConfig() }
         binding.btnHomeQuickSign.setOnClickListener { showTab(MainTab.FUNCTIONS) }
