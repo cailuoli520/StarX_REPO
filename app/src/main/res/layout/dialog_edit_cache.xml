@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/card_bg"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/dialog_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="编辑缓存记录"
+        android:textColor="@color/ios_label"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="题干"
+        android:textColor="@color/ios_secondary_label"
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/edit_question_stem"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/ios_input_bg"
+        android:hint="输入题干（去重计算以清理标签和空格后的题干为准）"
+        android:minLines="2"
+        android:gravity="top|start"
+        android:padding="12dp"
+        android:textColor="@color/ios_label"
+        android:textColorHint="@color/ios_tertiary_label" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="答案"
+        android:textColor="@color/ios_secondary_label"
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/edit_question_answer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/ios_input_bg"
+        android:hint="输入正确答案，多选题请用 # 分隔，填空题亦同"
+        android:minLines="2"
+        android:gravity="top|start"
+        android:padding="12dp"
+        android:textColor="@color/ios_label"
+        android:textColorHint="@color/ios_tertiary_label" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_cancel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/btn_map_secondary"
+            android:text="取消"
+            android:textColor="@android:color/white"
+            android:textAllCaps="false" />
+
+        <Space
+            android:layout_width="12dp"
+            android:layout_height="1dp" />
+
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/btn_primary_bg"
+            android:text="保存"
+            android:textColor="@android:color/white"
+            android:textAllCaps="false" />
+    </LinearLayout>
+</LinearLayout>

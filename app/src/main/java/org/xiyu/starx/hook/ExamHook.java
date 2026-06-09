@@ -29,6 +29,7 @@ import org.xiyu.starx.util.AnswerMatcher;
 import org.xiyu.starx.util.CxClasses;
 import org.xiyu.starx.util.Logx;
 import org.xiyu.starx.util.PrivateToast;
+import org.xiyu.starx.util.QuestionCache;
 import org.xiyu.starx.util.SecureOverlay;
 
 import java.lang.reflect.Field;
@@ -653,6 +654,19 @@ public class ExamHook {
                     });
                     result = "ok";
                     break;
+                case "saveToCache":
+                    String q = payload.optString("question", null);
+                    String ans = payload.optString("answer", null);
+                    String opts = payload.optString("options", null);
+                    if (q != null && !q.trim().isEmpty() && ans != null && !ans.trim().isEmpty()) {
+                        QuestionCache qc = QuestionCache.get();
+                        if (qc != null) {
+                            qc.put(q, opts, ans, "自动扫描");
+                            Logx.i("ExamHook: saveToCache => " + q + " -> " + ans);
+                        }
+                    }
+                    result = "ok";
+                    break;
                 case "log":
                     Logx.i("ExamHook[JS]: " + payload.optString("msg", ""));
                     break;
@@ -841,6 +855,102 @@ public class ExamHook {
             Logx.w("ExamHook: visibility bypass inject failed: " + t.getMessage());
         }
         try {
+            // 注入考试后详情页自动扫描 JS
+            String detailScannerJs = "(function(){\n" +
+                "    var scannedCount = 0;\n" +
+                "    function scanDoc(doc) {\n" +
+                "        try {\n" +
+                "            if (!doc || !doc.body) return;\n" +
+                "            var pageText = doc.body.innerText || \"\";\n" +
+                "            if (pageText.indexOf(\"正确答案\") === -1 && pageText.indexOf(\"参考答案\") === -1) {\n" +
+                "                return;\n" +
+                "            }\n" +
+                "            var blocks = doc.querySelectorAll('.TiMu, .tiMu, .questionLi, .queBox, .mark_item, .questionItem, .exam-item, .pad_question, .subjectDet, .mark_name, .question-wrap, .topic-item, .question-list li');\n" +
+                "            for (var i = 0; i < blocks.length; i++) {\n" +
+                "                var block = blocks[i];\n" +
+                "                var stemEl = block.querySelector('.Zy_TItle, .mark_name, .title, .question-title, p');\n" +
+                "                if (!stemEl) continue;\n" +
+                "                var stem = (stemEl.innerText || stemEl.textContent).trim();\n" +
+                "                stem = stem.replace(/^\\s*\\d+[\\.、\\s]*/, '').replace(/^[（\\(【\\[](单选题|多选题|填空题|简答题|判断题|名词解释|计算题|问答题|选择题)[）\\)】\\]]/, '').trim();\n" +
+                "                if (!stem) continue;\n" +
+                "                var answer = \"\";\n" +
+                "                var elements = block.getElementsByTagName('*');\n" +
+                "                for (var j = 0; j < elements.length; j++) {\n" +
+                "                    var el = elements[j];\n" +
+                "                    var text = (el.innerText || \"\").trim();\n" +
+                "                    if (text.indexOf(\"正确答案\") === 0 || text.indexOf(\"参考答案\") === 0) {\n" +
+                "                        var cleaned = text.replace(/^正确答案[：:\\s]*/, '').replace(/^参考答案[：:\\s]*/, '').trim();\n" +
+                "                        if (!cleaned && el.parentElement) {\n" +
+                "                            var pText = (el.parentElement.innerText || \"\").trim();\n" +
+                "                            cleaned = pText.replace(/^正确答案[：:\\s]*/, '').replace(/^参考答案[：:\\s]*/, '').trim();\n" +
+                "                        }\n" +
+                "                        if (cleaned) {\n" +
+                "                            answer = cleaned;\n" +
+                "                            break;\n" +
+                "                        }\n" +
+                "                    }\n" +
+                "                }\n" +
+                "                if (!answer) {\n" +
+                "                    var ansEl = block.querySelector('.Py_answer, [class*=answer], [class*=Answer]');\n" +
+                "                    if (ansEl) {\n" +
+                "                        var txt = (ansEl.innerText || \"\").trim();\n" +
+                "                        answer = txt.replace(/^正确答案[：:\\s]*/, '').replace(/^参考答案[：:\\s]*/, '').trim();\n" +
+                "                    }\n" +
+                "                }\n" +
+                "                if (stem && answer) {\n" +
+                "                    var optTexts = [];\n" +
+                "                    var optEls = block.querySelectorAll('li.fl_l, li.clearfix, .answerBg, .option-item, .option_li, .radio_option, .checkbox_option, .optionUl li');\n" +
+                "                    for (var k = 0; k < optEls.length; k++) {\n" +
+                "                        var optTxt = (optEls[k].innerText || \"\").trim();\n" +
+                "                        optTxt = optTxt.replace(/^[A-Za-z][.、:：\\s]\\s*/, '').trim();\n" +
+                "                        if (optTxt && optTexts.indexOf(optTxt) === -1) {\n" +
+                "                            optTexts.push(optTxt);\n" +
+                "                        }\n" +
+                "                    }\n" +
+                "                    var optionsStr = optTexts.join('|');\n" +
+                "                    if (window._starx && window._starx.saveToCache) {\n" +
+                "                        window._starx.saveToCache(stem, optionsStr, answer);\n" +
+                "                        scannedCount++;\n" +
+                "                    } else if (window._starxNative && window._starxNative.saveToCache) {\n" +
+                "                        window._starxNative.saveToCache(stem, optionsStr, answer);\n" +
+                "                        scannedCount++;\n" +
+                "                    } else {\n" +
+                "                        prompt(JSON.stringify({\n" +
+                "                            method: 'saveToCache',\n" +
+                "                            payload: { question: stem, options: optionsStr, answer: answer }\n" +
+                "                        }), 'StarXBridgeV1');\n" +
+                "                        scannedCount++;\n" +
+                "                    }\n" +
+                "                }\n" +
+                "            }\n" +
+                "        } catch (e) {}\n" +
+                "    }\n" +
+                "    function scanAll() {\n" +
+                "        scanDoc(document);\n" +
+                "        var iframes = document.querySelectorAll('iframe');\n" +
+                "        for (var i = 0; i < iframes.length; i++) {\n" +
+                "            try {\n" +
+                "                var doc = iframes[i].contentDocument || iframes[i].contentWindow.document;\n" +
+                "                if (doc) scanDoc(doc);\n" +
+                "            } catch (e) {}\n" +
+                "        } \n" +
+                "        if (scannedCount > 0) {\n" +
+                "            var msg = \"自动扫描已保存 \" + scannedCount + \" 道题的正确答案到本地缓存\";\n" +
+                "            if (window._starx && window._starx.notifyStatus) {\n" +
+                "                window._starx.notifyStatus(msg, 3000);\n" +
+                "            } else if (window._starxNative && window._starxNative.notifyStatus) {\n" +
+                "                window._starxNative.notifyStatus(msg, 3000);\n" +
+                "            }\n" +
+                "        }\n" +
+                "    }\n" +
+                "    scanAll();\n" +
+                "})();";
+            webView.evaluateJavascript(detailScannerJs, null);
+            Logx.i("ExamHook: detail scanner JS injected");
+        } catch (Throwable t) {
+            Logx.w("ExamHook: detail scanner inject failed: " + t.getMessage());
+        }
+        try {
             ensureBridgeRegistered(webView);
             String normalizedJsInject = normalizeInjectedUiScript(jsInject);
 
@@ -959,6 +1069,17 @@ public class ExamHook {
                 });
             } catch (Throwable t) {
                 Logx.w("ExamHook[JS→Java]: kickHtmlPipeline failed: " + t.getMessage());
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        public void saveToCache(String question, String options, String answer) {
+            if (question != null && !question.trim().isEmpty() && answer != null && !answer.trim().isEmpty()) {
+                QuestionCache qc = QuestionCache.get();
+                if (qc != null) {
+                    qc.put(question, options, answer, "自动扫描");
+                    Logx.i("ExamHook[JSBridge]: saveToCache => " + question + " -> " + answer);
+                }
             }
         }
     }
@@ -1832,8 +1953,12 @@ public class ExamHook {
                 if (Thread.currentThread().isInterrupted()) break;
                 var q = questions.get(i);
                 if (q.stem == null || q.stem.isEmpty()) continue;
-                // Allow manual trigger (single == true) to always search and fill even if identified as answered
-                if (!single && q.isAnswered) {
+                // Allow manual trigger (single == true) to always search and fill even if identified as answered.
+                // In auto mode, skip only if it's choice/judgment and already answered.
+                // For fill-in-the-blank and short-answers, never skip to avoid false-positives from hidden template inputs.
+                if (!single && q.isAnswered && (q.type == org.xiyu.starx.util.HtmlQuestionExtractor.Type.SINGLE_CHOICE 
+                        || q.type == org.xiyu.starx.util.HtmlQuestionExtractor.Type.MULTIPLE_CHOICE 
+                        || q.type == org.xiyu.starx.util.HtmlQuestionExtractor.Type.TRUE_FALSE)) {
                     Logx.i("ExamHook: html pipeline — question already answered, skip => " + truncate(q.stem, 40));
                     continue;
                 }

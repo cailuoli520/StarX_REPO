@@ -346,6 +346,96 @@ public class QuestionCache {
         }
     }
 
+    public static class CacheRecord {
+        public final String hash;
+        public final String question;
+        public final String answer;
+        public final String source;
+        public final long timestamp;
+
+        public CacheRecord(String hash, String question, String answer, String source, long timestamp) {
+            this.hash = hash;
+            this.question = question;
+            this.answer = answer;
+            this.source = source;
+            this.timestamp = timestamp;
+        }
+    }
+
+    public java.util.List<CacheRecord> search(String query) {
+        java.util.List<CacheRecord> list = new java.util.ArrayList<>();
+        SQLiteDatabase db = null;
+        Cursor cursor = null;
+        try {
+            db = dbHelper.getReadableDatabase();
+            if (query == null || query.trim().isEmpty()) {
+                cursor = db.query(TABLE,
+                        new String[]{"hash", "question", "answer", "source", "timestamp"},
+                        null, null, null, null, "timestamp DESC", "100");
+            } else {
+                cursor = db.query(TABLE,
+                        new String[]{"hash", "question", "answer", "source", "timestamp"},
+                        "question LIKE ? OR answer LIKE ?",
+                        new String[]{"%" + query + "%", "%" + query + "%"},
+                        null, null, "timestamp DESC", "100");
+            }
+            if (cursor != null && cursor.moveToFirst()) {
+                do {
+                    list.add(new CacheRecord(
+                            cursor.getString(0),
+                            cursor.getString(1),
+                            cursor.getString(2),
+                            cursor.getString(3),
+                            cursor.getLong(4)
+                    ));
+                } while (cursor.moveToNext());
+            }
+        } catch (Throwable t) {
+            Logx.w("QuestionCache: search error: " + t.getMessage());
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        return list;
+    }
+
+    public void deleteByHash(String hash) {
+        if (hash == null || hash.isEmpty()) return;
+        SQLiteDatabase db = null;
+        try {
+            db = dbHelper.getWritableDatabase();
+            db.delete(TABLE, "hash = ?", new String[]{hash});
+        } catch (Throwable t) {
+            Logx.w("QuestionCache: delete error: " + t.getMessage());
+        }
+    }
+
+    public void updateOrInsert(String oldHash, String question, String answer, String source) {
+        if (question == null || answer == null) return;
+        SQLiteDatabase db = null;
+        try {
+            db = dbHelper.getWritableDatabase();
+            db.beginTransaction();
+            if (oldHash != null && !oldHash.isEmpty()) {
+                db.delete(TABLE, "hash = ?", new String[]{oldHash});
+            }
+            String newHash = hash(question, null);
+            ContentValues cv = new ContentValues();
+            cv.put("hash", newHash);
+            cv.put("question", question.length() > 200 ? question.substring(0, 200) : question);
+            cv.put("answer", answer);
+            cv.put("source", source);
+            cv.put("timestamp", System.currentTimeMillis());
+            db.insertWithOnConflict(TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+            db.setTransactionSuccessful();
+        } catch (Throwable t) {
+            Logx.w("QuestionCache: updateOrInsert error: " + t.getMessage());
+        } finally {
+            if (db != null) {
+                try { db.endTransaction(); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
     public static class CacheEntry {
         public final String answer;
         public final String source;

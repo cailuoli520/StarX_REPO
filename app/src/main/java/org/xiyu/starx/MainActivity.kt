@@ -1,4 +1,4 @@
-﻿package org.xiyu.starx
+package org.xiyu.starx
 
 import android.annotation.SuppressLint
 import android.animation.ObjectAnimator
@@ -28,6 +28,7 @@ import io.github.libxposed.service.XposedService.OnScopeEventListener
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xiyu.starx.databinding.ActivityMainBinding
+import org.xiyu.starx.util.QuestionCache
 import org.xiyu.starx.license.LicenseManager
 import java.net.HttpURLConnection
 import java.net.URL
@@ -496,6 +497,8 @@ class MainActivity : Activity(), App.ServiceStateListener {
         binding.btnExamTriggerVolumeUp.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP) }
         binding.btnExamTriggerVolumeCombo.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_VOLUME_UP_DOWN) }
         binding.btnExamTriggerAuto.setOnClickListener { saveExamTriggerMode(EXAM_TRIGGER_AUTO) }
+        binding.btnManageCache.setOnClickListener { showCacheManagerDialog() }
+        binding.btnImportOcsSource.setOnClickListener { showOcsImportDialog() }
 
         binding.switchAutoSignTarget.setOnCheckedChangeListener { _, isChecked ->
             if (locationLoading) return@setOnCheckedChangeListener
@@ -1662,5 +1665,260 @@ class MainActivity : Activity(), App.ServiceStateListener {
             }
             .setCancelable(false)
             .show()
+    }
+
+    private fun showCacheManagerDialog() {
+        val dialog = android.app.Dialog(this)
+        dialog.setContentView(R.layout.dialog_cache_manager)
+        dialog.window?.apply {
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            setBackgroundDrawableResource(android.R.color.transparent)
+        }
+
+        val editSearch = dialog.findViewById<EditText>(R.id.edit_search)
+        val btnAdd = dialog.findViewById<Button>(R.id.btn_add_cache)
+        val btnClear = dialog.findViewById<Button>(R.id.btn_clear_all)
+        val btnClose = dialog.findViewById<Button>(R.id.btn_close)
+        val textSummary = dialog.findViewById<TextView>(R.id.cache_summary)
+        val container = dialog.findViewById<ViewGroup>(R.id.cache_list_container)
+
+        fun loadList(query: String = "") {
+            container.removeAllViews()
+            val qc = QuestionCache.get()
+            if (qc == null) {
+                textSummary.text = "题库缓存未初始化（等待框架连接）"
+                return
+            }
+            val records = qc.search(query)
+            textSummary.text = "共找到 ${records.size} 条记录 (最多显示 100 条)"
+
+            records.forEach { record ->
+                val itemView = layoutInflater.inflate(R.layout.item_cache_record, container, false)
+                val textQ = itemView.findViewById<TextView>(R.id.text_question)
+                val textA = itemView.findViewById<TextView>(R.id.text_answer)
+                val textMeta = itemView.findViewById<TextView>(R.id.text_meta)
+                val btnEdit = itemView.findViewById<TextView>(R.id.btn_edit_record)
+                val btnDelete = itemView.findViewById<TextView>(R.id.btn_delete_record)
+
+                textQ.text = record.question
+                textA.text = "答案: ${record.answer}"
+                
+                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                val timeStr = sdf.format(Date(record.timestamp))
+                textMeta.text = "来源: ${record.source} | 时间: $timeStr"
+
+                btnEdit.setOnClickListener {
+                    showEditCacheDialog(record) {
+                        loadList(editSearch.text.toString().trim())
+                    }
+                }
+
+                btnDelete.setOnClickListener {
+                    android.app.AlertDialog.Builder(this@MainActivity)
+                        .setTitle("确认删除")
+                        .setMessage("确定删除这条缓存记录吗？")
+                        .setPositiveButton("删除") { _, _ ->
+                            qc.deleteByHash(record.hash)
+                            loadList(editSearch.text.toString().trim())
+                            Toast.makeText(this@MainActivity, "已删除", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+
+                container.addView(itemView)
+            }
+        }
+
+        // Instant search with text changes
+        editSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                loadList(s?.toString()?.trim() ?: "")
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+
+        btnAdd.setOnClickListener {
+            showEditCacheDialog(null) {
+                loadList(editSearch.text.toString().trim())
+            }
+        }
+
+        btnClear.setOnClickListener {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("确认清空")
+                .setMessage("确定要清空本地所有的题库缓存吗？此操作无法撤销。")
+                .setPositiveButton("确认清空") { _, _ ->
+                    val qc = QuestionCache.get()
+                    qc?.clear()
+                    loadList(editSearch.text.toString().trim())
+                    Toast.makeText(this, "缓存已清空", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+
+        btnClose.setOnClickListener { dialog.dismiss() }
+
+        loadList()
+        dialog.show()
+    }
+
+    private fun showEditCacheDialog(record: QuestionCache.CacheRecord?, onSaved: () -> Unit) {
+        val dialog = android.app.Dialog(this)
+        dialog.setContentView(R.layout.dialog_edit_cache)
+        dialog.window?.apply {
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setBackgroundDrawableResource(android.R.color.transparent)
+        }
+
+        val textTitle = dialog.findViewById<TextView>(R.id.dialog_title)
+        val editQ = dialog.findViewById<EditText>(R.id.edit_question_stem)
+        val editA = dialog.findViewById<EditText>(R.id.edit_question_answer)
+        val btnCancel = dialog.findViewById<Button>(R.id.btn_cancel)
+        val btnSave = dialog.findViewById<Button>(R.id.btn_save)
+
+        if (record != null) {
+            textTitle.text = "编辑缓存记录"
+            editQ.setText(record.question)
+            editA.setText(record.answer)
+        } else {
+            textTitle.text = "添加缓存记录"
+            editQ.setText("")
+            editA.setText("")
+        }
+
+        btnCancel.setOnClickListener { dialog.dismiss() }
+
+        btnSave.setOnClickListener {
+            val q = editQ.text.toString().trim()
+            val a = editA.text.toString().trim()
+            if (q.isEmpty() || a.isEmpty()) {
+                Toast.makeText(this, "题干和答案不能为空", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val qc = QuestionCache.get()
+            if (qc == null) {
+                Toast.makeText(this, "题库缓存未初始化", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            qc.updateOrInsert(record?.hash, q, a, if (record != null) "手动编辑" else "手动添加")
+            Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+            onSaved()
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
+    private fun showOcsImportDialog() {
+        val padding = (14 * resources.displayMetrics.density).toInt()
+        val editText = EditText(this).apply {
+            hint = "请在这里粘贴 OCS 风格的 JSON 配置内容"
+            gravity = android.view.Gravity.TOP
+            minLines = 6
+            background = getDrawable(R.drawable.ios_input_bg)
+            setPadding(padding, padding, padding, padding)
+        }
+        val layoutPadding = (16 * resources.displayMetrics.density).toInt()
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(layoutPadding, layoutPadding, layoutPadding, layoutPadding)
+            addView(editText)
+        }
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("导入 OCS 题库配置")
+            .setView(layout)
+            .setPositiveButton("导入") { dialog, _ ->
+                val jsonText = editText.text.toString().trim()
+                if (jsonText.isEmpty()) {
+                    Toast.makeText(this, "内容不能为空", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                try {
+                    val list = mutableListOf<TikuSourceConfig>()
+                    if (jsonText.startsWith("[")) {
+                        val arr = JSONArray(jsonText)
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val cfg = parseOcsObject(obj)
+                            if (cfg != null) list.add(cfg)
+                        }
+                    } else {
+                        val obj = JSONObject(jsonText)
+                        val cfg = parseOcsObject(obj)
+                        if (cfg != null) list.add(cfg)
+                    }
+
+                    if (list.isEmpty()) {
+                        Toast.makeText(this, "未能解析到有效的题库配置", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+
+                    list.forEach { source ->
+                        addTikuSourceEditor(source)
+                    }
+                    saveTikuConfig()
+                    Toast.makeText(this, "成功导入 ${list.size} 个 OCS 题库源", Toast.LENGTH_SHORT).show()
+                    dialog.dismiss()
+                } catch (e: Throwable) {
+                    Toast.makeText(this, "解析失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun parseOcsObject(obj: JSONObject): TikuSourceConfig? {
+        val ocsName = obj.optString("name", "OCS 导入源").trim()
+        val ocsUrl = obj.optString("url", "").trim()
+        if (ocsUrl.isEmpty()) return null
+
+        val ocsMethod = obj.optString("method", "post").trim().lowercase(Locale.ROOT)
+        val mode = if (ocsMethod == "get") SOURCE_MODE_CUSTOM_GET else SOURCE_MODE_CUSTOM_POST_JSON
+        val placement = if (ocsMethod == "get") TEMPLATE_PARAM_PLACEMENT_QUERY else TEMPLATE_PARAM_PLACEMENT_BODY
+
+        // Parse data params
+        val paramsList = mutableListOf<TikuTemplateParamConfig>()
+        val dataObj = obj.optJSONObject("data")
+        if (dataObj != null) {
+            val keys = dataObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                var value = dataObj.optString(key, "")
+                value = value.replace("\${title}", "{{question}}")
+                             .replace("\${question}", "{{question}}")
+                             .replace("\${q}", "{{question}}")
+                             .replace("\${options}", "{{options}}")
+                             .replace("\${type}", "{{type}}")
+                paramsList.add(TikuTemplateParamConfig(key, value, placement))
+            }
+        }
+
+        // Heuristic answer path from handler:
+        var answerPath = ""
+        val handler = obj.optString("handler", "")
+        if (handler.isNotEmpty()) {
+            val regex = Regex("""res\.([\w$.\[\]]+)""")
+            val matches = regex.findAll(handler)
+                .map { it.groupValues[1].split("(")[0].trim().trimEnd('.') }
+                .toList()
+            if (matches.isNotEmpty()) {
+                answerPath = matches.firstOrNull { it.contains("answer", ignoreCase = true) || it.contains("ans", ignoreCase = true) }
+                    ?: matches.last()
+            }
+        }
+
+        return TikuSourceConfig(
+            name = ocsName,
+            baseUrl = ocsUrl,
+            token = "",
+            enabled = true,
+            mode = mode,
+            answerPath = answerPath,
+            templateParams = paramsList
+        )
     }
 }

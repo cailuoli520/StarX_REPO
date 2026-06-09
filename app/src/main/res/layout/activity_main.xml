@@ -637,6 +637,16 @@
                     android:textAllCaps="false"
                     android:textColor="@android:color/white" />
 
+                <Button
+                    android:id="@+id/btn_import_ocs_source"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/btn_map_secondary"
+                    android:text="导入 OCS 格式题库源"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -688,6 +698,16 @@
                         android:layout_height="wrap_content"
                         android:text="启用本地答案缓存"
                         android:textColor="@color/ios_label" />
+
+                    <Button
+                        android:id="@+id/btn_manage_cache"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/btn_map_secondary"
+                        android:text="管理本地答案缓存"
+                        android:textAllCaps="false"
+                        android:textColor="@android:color/white" />
 
                     <Button
                         android:id="@+id/btn_save_tiku"
@@ -750,7 +770,14 @@
 
                     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="OpenAI 兼容" android:textColor="@color/ios_label" android:textSize="18sp" android:textStyle="bold" />
                     <EditText android:id="@+id/edit_openai_key" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:background="@drawable/ios_input_bg" android:hint="API Key" android:padding="14dp" android:textColor="@color/ios_label" android:textColorHint="@color/ios_tertiary_label" />
-                    <EditText android:id="@+id/edit_openai_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/ios_input_bg" android:hint="Base URL，如 https://api.openai.com/v1" android:inputType="textUri" android:padding="14dp" android:textColor="@color/ios_label" android:textColorHint="@color/ios_tertiary_label" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="Base URL (例如 https://api.openai.com/v1)"
+                        android:textColor="@color/ios_secondary_label"
+                        android:textSize="12sp" />
+                    <EditText android:id="@+id/edit_openai_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:background="@drawable/ios_input_bg" android:hint="Base URL" android:inputType="textUri" android:padding="14dp" android:textColor="@color/ios_label" android:textColorHint="@color/ios_tertiary_label" />
                     <EditText android:id="@+id/edit_openai_model" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/ios_input_bg" android:hint="模型名，如 gpt-4.1-mini / deepseek-chat" android:padding="14dp" android:textColor="@color/ios_label" android:textColorHint="@color/ios_tertiary_label" />
                 </LinearLayout>
 
